@@ -2,36 +2,39 @@
 
 This guide takes the local project in this folder and publishes it to GitHub.
 
-## 1. Initialize Git Locally
+## 1. Initialize Git Locally (Already Done in This Workspace)
 ```powershell
 git init -b main
 git add .
 git commit -m "Initial project scaffold"
 ```
 
-## 2. Create GitHub Repo (Preferred: GitHub CLI)
-Install `gh` first if needed:
+## 2. Authenticate GitHub CLI
+In this environment, `gh` is installed at `C:\Program Files\GitHub CLI\gh.exe`.
+
+Authenticate once:
 ```powershell
-winget install --id GitHub.cli -e --source winget
+& "C:\Program Files\GitHub CLI\gh.exe" auth login
 ```
 
-Then authenticate and create repo:
+## 3. One-Command Publish + Invite
+Run the bootstrap script from repo root:
 ```powershell
-gh auth login
-gh repo create ece-445-film-digitizer --private --source . --remote origin --push
+.\scripts\github-bootstrap.ps1 -GitHubUsername <your-github-username> -RepoName ece-445-film-digitizer -Visibility private -Collaborator Allannn-sudo
 ```
 
-Replace `ece-445-film-digitizer` with your preferred name.
+This will:
+- create the GitHub repository,
+- push the local `main` branch,
+- invite `Allannn-sudo` as collaborator with push access.
 
-## 3. Invite Your Group Member
-After repo creation, invite collaborator `Allannn-sudo`:
+## 4. Manual Commands (Alternative)
 ```powershell
-gh api -X PUT repos/<your-github-username>/ece-445-film-digitizer/collaborators/Allannn-sudo -f permission=push
+& "C:\Program Files\GitHub CLI\gh.exe" repo create ece-445-film-digitizer --private --source . --remote origin --push
+& "C:\Program Files\GitHub CLI\gh.exe" api -X PUT repos/<your-github-username>/ece-445-film-digitizer/collaborators/Allannn-sudo -f permission=push
 ```
 
-Use your real username and repo name in the command.
-
-## 4. Web UI Fallback (No CLI)
+## 5. Web UI Fallback (No CLI)
 1. Create a new private repo on GitHub.
 2. In this folder run:
 ```powershell
