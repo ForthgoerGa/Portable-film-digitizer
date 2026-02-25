@@ -1,0 +1,53 @@
+(version 1)
+
+# =============================================================================
+# JLCPCB Standard 2-Layer Rigid PCB Design Rules
+# 1oz PCB boards
+# Based on standard capabilities: https://jlcpcb.com/capabilities/Capabilities
+# =============================================================================
+
+# Minimum Track Width
+# -----------------------------------------------------------------------------
+(rule "JLCPCB Min Track Width"
+    (constraint track_width (min 0.1mm))
+    (condition "A.Type == 'track'"))
+
+# Minimum Clearance (Track-to-Track, Track-to-Pad, Track-to-Via)
+# -----------------------------------------------------------------------------
+(rule "JLCPCB Min Clearance"
+    (constraint clearance (min 0.1mm))
+    (condition "A.Type == 'track' || A.Type == 'via' || A.Type == 'pad'"))
+
+# Minimum Via Size
+# -----------------------------------------------------------------------------
+(rule "JLCPCB Min Via Hole"
+    (constraint hole_size (min 0.15mm))
+    (condition "A.Type == 'via'"))
+
+(rule "JLCPCB Min Via Diameter"
+    (constraint via_diameter (min 0.25mm))
+    (condition "A.Type == 'via'"))
+    
+#  Via Annular Width Minimum
+# -----------------------------------------------------------------------------
+(rule "Minimum annular ring for vias"
+    (constraint annular_width (min 0.05mm))
+    (condition "A.Type == 'Via'")
+)
+# Copper to Board Edge Clearance
+# -----------------------------------------------------------------------------
+(rule "JLCPCB Copper to Edge"
+    (constraint edge_clearance (min 0.2mm))
+    (condition "A.Type == 'track' || A.Type == 'via' || A.Type == 'pad' || A.Type == 'zone'"))
+
+# Hole to Hole Clearance
+# -----------------------------------------------------------------------------
+(rule "JLCPCB Hole to Hole"
+    (constraint hole_clearance (min 0.2mm))
+    (condition "A.Type == 'via' || A.Type == 'pad'"))
+
+#  Silk Screen Minimum Width
+# -----------------------------------------------------------------------------
+(rule "JLCPCB Min Silk Width"
+    (constraint text_thickness (min 0.15mm))
+    (condition "A.Layer == 'F.Silkscreen' || A.Layer == 'B.Silkscreen'"))
