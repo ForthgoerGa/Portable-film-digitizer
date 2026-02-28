@@ -5,7 +5,7 @@ ECE 445 coursework design project repository for hardware/firmware/software deve
 ## System Block Diagram
 This block diagram shows the general system design and how the power subsystem, control unit, and imaging subsystem are connected.
 
-![Portable film digitizer system block diagram](Block_Diagram.png)
+<img width="2816" height="1504" alt="Gemini_Generated_Image_8ml5k58ml5k58ml5" src="https://github.com/user-attachments/assets/f618c00b-75cb-43d7-91d4-eb39339cfe66" />
 
 ## Project Goal
 Build a portable, battery-powered film digitizer that supports:
