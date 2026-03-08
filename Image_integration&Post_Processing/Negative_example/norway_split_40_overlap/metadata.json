@@ -1,0 +1,27 @@
+{
+  "source_image": "DV09_Norway_KB1_28_HXY_raw_UHD.jpg",
+  "source_size": {
+    "width": 2048,
+    "height": 1396
+  },
+  "grid": {
+    "rows": 5,
+    "cols": 8,
+    "count": 40
+  },
+  "tile_size": {
+    "width": 312,
+    "height": 332
+  },
+  "stride": {
+    "x": 248,
+    "y": 266
+  },
+  "overlap": {
+    "x_px": 64,
+    "y_px": 66,
+    "x_ratio": 0.20512820512820512,
+    "y_ratio": 0.19879518072289157
+  },
+  "ordering": "row-major, left-to-right then top-to-bottom"
+}
