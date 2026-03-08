@@ -1,14 +1,15 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>Film Digitizer Control</title>
     <link rel="stylesheet" href="style.css" />
 </head>
 <body>
     <main class="container">
         <h1>Film Digitizer Control</h1>
+
         <section class="controls">
             <div class="controls-row">
                 <label for="format">Film Format:</label>
@@ -20,9 +21,10 @@
             </div>
             <div class="controls-row">
                 <button id="start" class="primary">Start Scan</button>
-                <button id="cancel" class="secondary">Cancel</button>
+                <button id="cancel" class="secondary" disabled>Cancel</button>
             </div>
         </section>
+
         <section class="controls">
             <div class="controls-row">
                 <label for="serialPortSelect">Serial Port:</label>
@@ -31,10 +33,31 @@
                 </select>
             </div>
         </section>
+
         <section class="status">
             <h2>Status</h2>
-            <div id="stateBadge" class="badge idle">Idle</div>
+            <div id="stateBadge" class="badge ready">Ready</div>
             <div id="resultArea"></div>
+        </section>
+
+        <section class="results">
+            <h2>Fractions Grid</h2>
+            <div id="fractionsMeta" class="meta-line"></div>
+            <div id="fractionsGrid" class="fractions-grid"></div>
+        </section>
+
+        <section class="results">
+            <h2>Integrated vs Output</h2>
+            <div class="compare-grid">
+                <article class="image-card">
+                    <h3>Integrated Raw Image</h3>
+                    <img id="rawImage" alt="Integrated raw image preview" />
+                </article>
+                <article class="image-card">
+                    <h3>Final Output (White-Balanced)</h3>
+                    <img id="finalImage" alt="Final white-balanced output preview" />
+                </article>
+            </div>
         </section>
     </main>
     <script src="app.js"></script>

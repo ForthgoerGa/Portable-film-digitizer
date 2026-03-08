@@ -1,8 +1,13 @@
-import serial
 import struct
 import threading
 import time
-from serial.tools import list_ports
+
+try:
+    import serial
+    from serial.tools import list_ports
+except ImportError:
+    serial = None
+    list_ports = None
 
 BAUD_RATE = 115200
 
@@ -14,6 +19,10 @@ class SerialInterface:
     NACK = 0x15
 
     def __init__(self, port: str, baudrate=BAUD_RATE, timeout=1.0):
+        if serial is None:
+            raise RuntimeError(
+                "pyserial is not installed. Use MOCK serial port for demo mode."
+            )
         self._lock = threading.Lock()
         self._port = port
         self._baudrate = baudrate
@@ -124,12 +133,13 @@ def get_serial_status():
 
 def list_serial_ports():
     ports = [{"port": "MOCK", "description": "Mock Port (testing)"}]
-    ports.extend(
-        [
-            {"port": p.device, "description": p.description}
-            for p in list_ports.comports()
-        ]
-    )
+    if list_ports is not None:
+        ports.extend(
+            [
+                {"port": p.device, "description": p.description}
+                for p in list_ports.comports()
+            ]
+        )
     return ports
 
 
