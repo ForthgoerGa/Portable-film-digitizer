@@ -15,6 +15,22 @@ resource "aws_s3_bucket" "image_bucket" {
   bucket = "film-digitizer-images-${random_string.bucket_suffix.result}"
 }
 
+resource "aws_s3_bucket_ownership_controls" "image_bucket" {
+  bucket = aws_s3_bucket.image_bucket.id
+  rule {
+    object_ownership = "BucketOwnerPreferred"
+  }
+}
+
+resource "aws_s3_bucket_public_access_block" "image_bucket" {
+  bucket = aws_s3_bucket.image_bucket.id
+
+  block_public_acls       = false
+  block_public_policy     = false
+  ignore_public_acls      = false
+  restrict_public_buckets = false
+}
+
 resource "random_string" "bucket_suffix" {
   length  = 8
   lower   = true

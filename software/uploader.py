@@ -3,7 +3,7 @@ import requests
 from typing import Optional
 
 # Configurable API endpoint
-CLOUD_API_ENDPOINT = "https://your-api.example.com/upload"
+CLOUD_API_ENDPOINT = "https://rduugzdncip2vlpu54o53jhbay0psidi.lambda-url.us-east-2.on.aws"
 
 
 class UploadError(Exception):

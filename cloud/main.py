@@ -2,30 +2,56 @@ import boto3
 import base64
 import os
 import json
+import cgi
+import io
+import logging
 from datetime import datetime
 
 
 def handler(event, context):
-    http_method = event.get("requestContext", {}).get("httpMethod")
+    logging.info(f"Event: {json.dumps(event)}")
+    http_method = event.get("requestContext", {}).get("http", {}).get("method")
     if http_method != "POST":
         return {"statusCode": 405, "body": json.dumps({"error": "Method not allowed"})}
 
-    # Assuming the image is base64 encoded in the body
     body = event.get("body", "")
     if not body:
         return {
             "statusCode": 400,
-            "body": json.dumps({"error": "No image data provided"}),
+            "body": json.dumps({"error": "No body provided"}),
         }
 
-    try:
-        if event.get("isBase64Encoded"):
-            image_data = base64.b64decode(body)
-        else:
-            # If not base64, assume it's raw bytes as string, but unlikely for image
-            image_data = body.encode("utf-8")
-    except Exception as e:
-        return {"statusCode": 400, "body": json.dumps({"error": "Invalid data"})}
+    headers = event.get("headers", {})
+    content_type = headers.get("content-type") or headers.get("Content-Type", "")
+
+    if "multipart/form-data" not in content_type:
+        return {
+            "statusCode": 400,
+            "body": json.dumps({"error": "Content-Type must be multipart/form-data"}),
+        }
+
+    # Decode body if base64 (multipart can be base64 if binary parts)
+    if event.get("isBase64Encoded"):
+        raw_body = base64.b64decode(body)
+    else:
+        raw_body = body.encode("utf-8")
+
+    # Parse multipart
+    environ = {
+        "REQUEST_METHOD": "POST",
+        "CONTENT_TYPE": content_type,
+        "CONTENT_LENGTH": str(len(raw_body)),
+    }
+    fp = io.BytesIO(raw_body)
+    form = cgi.FieldStorage(fp=fp, environ=environ, keep_blank_values=True)
+
+    image_file = form.getfirst("image")
+    if image_file is None:
+        return {
+            "statusCode": 400,
+            "body": json.dumps({"error": "No image field in form"}),
+        }
+    image_data = image_file
 
     s3 = boto3.client("s3")
     bucket = os.environ["S3_BUCKET"]
@@ -43,7 +69,9 @@ def handler(event, context):
         image_url = f"https://{bucket}.s3.amazonaws.com/{key}"
         return {
             "statusCode": 200,
-            "body": json.dumps({"message": "Image uploaded successfully", "key": key, "url": image_url}),
+            "body": json.dumps(
+                {"message": "Image uploaded successfully", "key": key, "url": image_url}
+            ),
         }
     except Exception as e:
-        return {"statusCode": 500, "body": json.dumps({"error": str(e)})})
+        return {"statusCode": 500, "body": json.dumps({"error": str(e)})}

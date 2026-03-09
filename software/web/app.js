@@ -15,7 +15,7 @@ let lastRenderedResultKey = null;
 function buildResultKey(result) {
     if (!result || !Array.isArray(result.tiles)) return null;
     const tileSignature = result.tiles.map((t) => t.filename).join("|");
-    return `${result.completed_at || ""}|${result.stitched_raw_url}|${result.final_url}|${result.tile_count}|${tileSignature}`;
+    return `${result.completed_at || ""}|${result.stitched_raw_url}|${result.final_url}|${result.tile_count}|${tileSignature}|${result.cloud_url || ""}`;
 }
 
 function clearScanViews() {
@@ -82,7 +82,8 @@ function updateUI(state, result) {
     }
 
     if (result && result.final_url) {
-        resultArea.innerHTML = `<span><b>Scan complete.</b> ${result.final_label || "Output ready"}.</span>`;
+        const cloudLink = result.cloud_url ? ` <a href="${result.cloud_url}" target="_blank">View uploaded image</a>` : "";
+        resultArea.innerHTML = `<span><b>Scan complete.</b> ${result.final_label || "Output ready"}.${cloudLink}</span>`;
         renderScanViews(result);
         return;
     }

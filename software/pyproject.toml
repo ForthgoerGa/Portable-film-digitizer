@@ -1,0 +1,27 @@
+[build-system]
+requires = ["setuptools", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "film-digitizer"
+version = "0.1.0"
+description = "Film digitization software with API and web UI"
+requires-python = ">=3.8"
+dependencies = [
+    "pyserial",
+    "fastapi",
+    "pydantic",
+    "uvicorn[standard]",
+    "pillow",
+    "requests",
+]
+
+[tool.setuptools.packages.find]
+where = ["."]
+
+[tool.black]
+line-length = 120
+
+[tool.flake8]
+max-line-length = 120
+extend-ignore = ["E203", "W503"]

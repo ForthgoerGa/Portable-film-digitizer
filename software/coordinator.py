@@ -1,12 +1,16 @@
 from __future__ import annotations
 
+import tempfile
 import threading
 import time
 from enum import Enum, auto
+from pathlib import Path
 
+import cv2
 import serial_comm
 from serial_comm import MockSerialInterface
-from stitcher import Stitcher
+from stitcher import Stitcher, MockScanner
+from uploader import Uploader
 
 
 class ScanState(Enum):
@@ -45,21 +49,34 @@ class ScanJobCoordinator:
 
     def run_job(self, film_format):
         try:
-            self.serial = (
-                serial_comm.serial_instance
-                if serial_comm.serial_instance is not None
-                and serial_comm.serial_instance.is_open
-                else MockSerialInterface()
-            )
-            self.serial.set_illumination(True)
+            # Mock scanning loop
+            with tempfile.TemporaryDirectory() as temp_dir:
+                temp_tiles_dir = Path(temp_dir)
+                mock_scanner = MockScanner()
+                while mock_scanner.simulate_next_tile(temp_tiles_dir):
+                    if self.cancel_flag:
+                        with self._lock:
+                            self.state = ScanState.ready
+                            self.result = {"cancelled": True}
+                        return
 
-            if self.cancel_flag:
-                with self._lock:
-                    self.state = ScanState.ready
-                    self.result = {"cancelled": True}
-                return
+                # Process the scanned tiles
+                scan_payload = self.stitcher.process_scan(temp_tiles_dir)
 
-            scan_payload = self.stitcher.process_demo_scan()
+                # Upload the final image
+                final_image_path = self.stitcher.output_dir / "processed_negative.png"
+                image = cv2.imread(str(final_image_path))
+                height, width = image.shape[:2]
+                if width > 2000 or height > 2000:
+                    scale = min(2000 / width, 2000 / height)
+                    new_width = int(width * scale)
+                    new_height = int(height * scale)
+                    image = cv2.resize(image, (new_width, new_height))
+                _, buffer = cv2.imencode(".jpg", image, [cv2.IMWRITE_JPEG_QUALITY, 85])
+                image_bytes = buffer.tobytes()
+                uploader = Uploader()
+                cloud_url = uploader.upload(image_bytes)
+                scan_payload["cloud_url"] = cloud_url
 
             if self.cancel_flag:
                 with self._lock:
@@ -79,11 +96,7 @@ class ScanJobCoordinator:
                 self.state = ScanState.error
                 self.result = {"error": str(e)}
         finally:
-            try:
-                if self.serial is not None:
-                    self.serial.set_illumination(False)
-            except Exception:
-                pass
+            pass  # No serial to turn off
 
     def cancel_job(self):
         with self._lock:
