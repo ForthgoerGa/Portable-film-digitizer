@@ -59,3 +59,32 @@ $$S_{total} = (N \times S_{Raw}) + S_{Proc} = 320.9 \text{ MB}$$
 $$T_{network} = \frac{S_{total} \times 8}{BW} = 256.72 \text{ seconds}$$
 
 We used these calculations when deciding how much processing to perform on the cloud as opposed to on-device with the Raspberry Pi. If we had to complete image stitching in the cloud, it would require transferring each of the 16 raw captures over the network. With a stable bandwidth of about 10 mbps, that would take over 4 minutes due to the data size. The RAW captures have a lot of unecessary information; if we can do processing locally on the pi such as stitching to reduce image size before transferring, then we can greatly reduce end to end latency.
+
+### 3/9 — TA Meeting & Control Plane Development
+
+We met with Gerasimos to show him the progress on the software side of the project as we waited for components to arrive. We built a simple user interface to start a scan and monitor it's progress, with the actual motor functionality stubbed out. For example, when our code called move(X, Y), we simply logged to console instead of issuing a command to the STM32 over UART as we would in production. Leo found mock images of negative film online, which he preprocessed and split into several frame captures. This allowed us to keep refining the control plane UI / state tracking and image processing pipeline while waiting for components to arrive. 
+
+I evaluated a couple of options like Python’s Flask and Django frameworks, but settled on using FastAPI alongside Uvicorn to create a HTTP web server as simply as possible for our use case. In production, this would be run as a system service so that it is resilient across failures or crashes since the user won’t be able to manage the software themself. 
+
+This following snippet represents how I setup a server to render static files (HTML/CSS for the user interface) as well as API routes to start a scan and retrieve device status. 
+```python
+@app.get("/")
+def root():
+    return RedirectResponse(url="/web/")
+
+
+@app.post("/scan")
+def start_scan(req: dict):
+    film_format = req.get("format", "35mm")
+    try:
+        coordinator.start_job(film_format)
+    except RuntimeError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    return {"status": "started", "format": film_format}
+
+
+@app.get("/status")
+def get_status():
+    return coordinator.status_dict()
+```
+[Insert picture of control plane UI]
