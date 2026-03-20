@@ -88,3 +88,92 @@ def get_status():
     return coordinator.status_dict()
 ```
 [Insert picture of control plane UI]
+
+
+### 3/20 — AWS Lambda Integration
+
+To handle the more intensive parts of capture post-processing (after the stitching process) I looked into using a cloud provider such as Amazon Web Services for additional compute resources. I evaluated several tools including virtual private servers (Amazon EC2) and serverless compute (AWS Lambda). Since we are working on an edge device that can only physically support one scan at a time, a lot of usual considerations that go into choosing a distributed/cloud solution weren’t applicable. Namely, we don’t have a need for high throughput performance under scale. Instead, we want to minimize latency so that users aren’t left waiting in the real world as their scan completes. Our project also inherently has bursty traffic, since an interactive device is not going to always be making requests or performing work. Users might use our device for maybe an hour on a single day of the week/month as they need to work on digitizing their physical film. Using an always-running virtual machine in the cloud would be overkill, since we cannot predict when a user will be using our device and as such must keep the server running at all times. 
+
+The solution I found for this was to use AWS Lambda. Functionally, serverless is similar to a traditional server. We issue some request to the cloud, and it performs some work and returns a response. However, serverless has the advantage of being on-demand, meaning that the cloud provider (AWS in this case) manages a pool of virtual machines that can be woken up as needed to serve our requests. This means that we don’t need to manage actual servers, which would add even more complexity to our project and shift the focus away from a hardware-based solution. However, this convenience comes at a performance cost, since we now have to incur some initial latency for requests as we wait for Amazon to spin up a virtual machine to handle our requests. 
+
+I worked with Gemini to create the following latency benchmarking script to make sure that latency is not too high:
+```python
+import boto3
+import time
+import json
+import statistics
+
+# Initialize the Lambda client
+lambda_client = boto3.client('lambda', region_name='us-east-1')
+
+FUNCTION_NAME = 'FilmDigitizer_Inversion_Pipeline'
+
+def trigger_lambda(invocation_type='RequestResponse'):
+    """
+    Invokes the Lambda function and returns the end-to-end 
+    latency from the client's perspective.
+    """
+    start_time = time.perf_content_cur_ns()
+    
+    response = lambda_client.invoke(
+        FunctionName=FUNCTION_NAME,
+        InvocationType=invocation_type,
+        Payload=json.dumps({"test": "latency_run"})
+    )
+    
+    # Read the response to ensure the round-trip is complete
+    response['Payload'].read()
+    
+    end_time = time.perf_content_cur_ns()
+    
+    # Convert nanoseconds to milliseconds
+    return (end_time - start_time) / 1_000_000
+
+def run_experiment():
+    print(f"--- Starting Latency Experiment for {FUNCTION_NAME} ---")
+    
+    # 1. Cold Start Measurement
+    # Note: This assumes the function hasn't been called in ~30 mins
+    print("Measuring Cold Start...")
+    cold_latency = trigger_lambda()
+    print(f"Cold Start Latency: {cold_latency:.2f} ms")
+    
+    # 2. Warm Start Measurements
+    # We run multiple iterations to get an average 'Warm' state
+    warm_latencies = []
+    print("\nMeasuring Warm Starts (5 iterations)...")
+    for i in range(5):
+        time.sleep(2) 
+        latency = trigger_lambda()
+        warm_latencies.append(latency)
+        print(f"Iteration {i+1}: {latency:.2f} ms")
+    
+    avg_warm = statistics.mean(warm_latencies)
+    
+    print("\n--- Final Results ---")
+    print(f"Total Cold Start Overhead: {cold_latency:.2f} ms")
+    print(f"Average Warm Start Latency: {avg_warm:.2f} ms")
+    print(f"Calculated Cold Start Penalty: {cold_latency - avg_warm:.2f} ms")
+
+if __name__ == "__main__":
+    run_experiment()
+```
+
+[AWS Cloudwatch latency trace]
+
+Even worst-case latency in the case of a cold start is amortized by the overall runtime of our scan, so it is not a concern. 
+
+Procedure
+
+1) Cold Start: The function is invoked after a redeployment to make sure that AWS has to provision a new VM to handle the request.
+2) Warm Start: The function is invoked immediately (within 10 seconds) after a successful execution to reuse the "frozen" container.
+3) Measurement: We utilized AWS CloudWatch to parse the init duration and billed duration metrics.
+
+Results
+
+| Metric | Cold Start (ms) | Warm Start (ms) | Variance |
+| :--- | :--- | :--- | :--- |
+| Initialization (Init) | 2,450 ms | 0 ms | -100% |
+| Image Inversion Script | 1,120 ms | 1,080 ms | -3.5% |
+| Total Overhead | 3,570 ms | 1,080 ms | -69.7% |
+
