@@ -177,3 +177,32 @@ Results
 | Image Inversion Script | 1,120 ms | 1,080 ms | -3.5% |
 | Total Overhead | 3,570 ms | 1,080 ms | -69.7% |
 
+
+### 3/27 — TA Meeting, PCB  Verification
+Met with Gerasimos this week and discussed previous work on the software architecture as well as next steps to assemble the circuit on a breadboard and PCB now that parts have arrived. Me and Guyan planned to work together over the next few weeks to incrementally solder components on and test in isolation so that we could create a functional prototype. 
+
+### 4/1 — Individual Progress Report
+I worked on my individual progress report by looking back on my contributions to the project and thinking about future work. 
+
+### 4/5 — Voltage Regulation and Component Testing
+
+We currently face the challenge of being able to verify our motion subsystem without having the rest of the subsystems implemented (i.e control, power, etc). As a result, I came up with a method to independently test the motor and motor drivers without relying on the rest of the components to be successfully soldered. 
+
+Method: Use a bench power supply to directly connect to our PCB power rail in place of the actual voltage regulator and battery unit. Connect both 4-pin motor connectors to the drivers on the board, ensuring that necessary capacitors and resistors are also installed. Finally, connect the I/O pins of an STM32 dev board to the underside I/O pins on the motor drivers. This way, we can program our STM32 dev board to control the motors through the motor drivers without having a functional power subsystem or soldered-on microcontroller. 
+
+Dstep — Linear displacement per microstep  
+P — Lead screw pitch (mm/rev) = 2 mm  
+Srev — Full steps per motor revolution = 200 steps  
+M — Microstepping factor = 16  
+V — Linear velocity (mm/s)  
+f — Step frequency (Hz)  
+Npulses — Total number of pulses issued  
+ΔL — Target displacement (mm)  
+
+$$D_{step} = \frac{P}{S_{rev} \times M} = \frac{2}{3200} \text{ mm/step}$$
+
+$$V = f \times D_{step}$$
+
+$$N_{pulses} = \frac{\Delta L}{D_{step}}$$
+
+Using the equations above, we can modify the constants in our code to achieve any desired velocity and displacement, within physical reason. Future work remains to tune acceleration/deceleration profiles since we want to minimize missed steps, as we have an open-loop motor design.
