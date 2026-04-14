@@ -172,8 +172,8 @@ Edit `config.py` or set environment variables in `.env`:
 | `DECISION_MODEL_ENABLED` | `0` | Enable optional high-level escalation model |
 | `OPENAI_API_KEY` | *(none)* | Gateway key for escalation-only high-level decisions |
 | `OPENAI_BASE_URL` | *(none)* | OpenAI-compatible gateway base URL |
-| `DECISION_MODEL` | `gpt-5.1-chat` | Primary high-level strategy model |
-| `DECISION_MODEL_FALLBACK` | `gpt-5-mini` | Cheaper fallback tier for escalation |
+| `DECISION_MODEL` | `gpt-5-mini` | Primary high-level strategy model, chosen for measured stability |
+| `DECISION_MODEL_FALLBACK` | `gpt-5.1-chat` | Stronger but currently less stable fallback tier |
 | `DECISION_MODEL_EXPERT` | `gpt-5-pro` | Expert tier reserved for the hardest cases |
 | `DECISION_SCORE_TRIGGER` | `0.55` | Escalate when score is at or below this threshold |
 | `DECISION_MIN_ITERATION` | `2` | Earliest iteration allowed to call the decision model |
@@ -192,8 +192,8 @@ This preserves Gemini as the main and rollback path while allowing stronger
 high-level parameter decisions on hard examples.
 
 Recommended escalation tiering:
-- primary decision tier: `gpt-5.1-chat`
-- cheaper fallback tier: `gpt-5-mini`
+- primary decision tier: `gpt-5-mini`
+- secondary tier: `gpt-5.1-chat`
 - expert tier: `gpt-5-pro`
 
 ---
