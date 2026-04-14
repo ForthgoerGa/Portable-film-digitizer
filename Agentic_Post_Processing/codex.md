@@ -145,38 +145,52 @@ Interpretation:
   - poor upper-density estimation
   - normalization / clipping behavior
 
-## Gateway model integration update
+## Gateway and decision-model integration update
 
-The project previously assumed Gemini-only access for classifier/evaluator model calls.
-This round added a practical OpenAI-compatible gateway path using the first tested key pattern.
+The stable Gemini-based agentic pipeline should remain the default fast path.
+This round therefore shifted from replacing Gemini to adding an optional
+high-level decision path that uses a stronger OpenAI-compatible gateway model.
 
 Files updated:
 - `config.py`
 - `agents/gateway_model.py`
-- `agents/classifier.py`
-- `agents/evaluator.py`
+- `agents/decision_model.py`
+- `orchestrator.py`
 - `.env.example`
+- `readme.md`
 
 ### What changed
 
-1. Added gateway-related config fields:
-- `OPENAI_API_KEY`
-- `OPENAI_BASE_URL`
-- `MODEL_PROVIDER`
-- `MODEL_GROUP`
+1. Preserved the stable Gemini defaults
+- `MODEL_PROVIDER` now defaults back to `gemini`
+- `VLM_MODEL` and `LLM_MODEL` default back to `gemini-2.5-flash`
+- Existing classifier/evaluator fast path remains the main pipeline
 
-2. Added `agents/gateway_model.py`
-- A small OpenAI-compatible adapter that sends multimodal requests to:
-  - `<OPENAI_BASE_URL>/chat/completions`
-- Supports text + image inputs by converting images into data URLs.
-- Returns a simple `.text` response compatible with the existing classifier/evaluator code path.
+2. Added an optional gateway-backed decision model
+- New config flags:
+  - `DECISION_MODEL_ENABLED`
+  - `DECISION_MODEL`
+  - `DECISION_MODEL_GROUP`
+  - `DECISION_SCORE_TRIGGER`
+  - `DECISION_MIN_ITERATION`
+- New module:
+  - `agents/decision_model.py`
+- Intended role:
+  - high-level strategy / escalation only
+  - not the default fast path
+  - not a replacement for the stable Gemini loop
 
-3. Updated `ClassifierAgent` and `EvaluatorAgent`
-- If `MODEL_PROVIDER=openai_compatible` and gateway env vars are present, they now use the gateway adapter.
-- If not, they still fall back to the old Gemini path or heuristic mode.
+3. Added orchestration hook for difficult cases
+- `orchestrator.py` now accepts an optional `DecisionAgent`
+- If enabled, it may override the next iteration's parameter suggestion only when:
+  - current iteration >= `DECISION_MIN_ITERATION`
+  - current score <= `DECISION_SCORE_TRIGGER`
+  - the regular fast path has not already passed
 
-4. Added `.env.example`
-- Documents the recommended integration pattern.
+4. Added gateway transport support
+- `agents/gateway_model.py` sends text + image multimodal requests through an OpenAI-compatible endpoint
+- Intended base URL pattern:
+  - `https://yinli.one/v1`
 
 ### Model probing result for the first gateway key pattern
 
@@ -189,20 +203,40 @@ Models that returned valid minimal completions:
 - `gpt-4.1`
 - `deepseek-chat` (backend surfaced as `deepseek-v3`)
 
-Model that responded less reliably in this quick probe:
-- `gemini-2.5-flash`
-  - returned HTTP 200, but the sampled response body was effectively unusable for this minimal check
+User-provided gateway screenshots additionally confirmed that the gateway also exposes stronger model families, including:
+- `gpt-5-chat-latest`
+- `gpt-5-mini`
+- `gpt-5-pro`
+- `gpt-5.1-chat`
+- `gpt-5.2`
 
-### Recommended default for this project
+The agreed direction is to use:
+- existing Gemini path for the main fast/rollback loop
+- `gpt-5.2` as the optional higher-level decision model
 
-Recommended starting point:
-- `MODEL_PROVIDER=openai_compatible`
-- `OPENAI_BASE_URL=https://yinli.one/v1`
-- `VLM_MODEL=gpt-4.1-mini`
-- `LLM_MODEL=gpt-4.1-mini`
+### Recommended environment setup
 
-Cheaper alternative to test later:
-- `deepseek-chat`
+Create `C:\ece_445\Agentic_Post_Processing\.env` with a layout like:
+
+```env
+# Stable Gemini main path
+MODEL_PROVIDER=gemini
+GEMINI_API_KEY=your_existing_stable_gemini_key
+VLM_MODEL=gemini-2.5-flash
+LLM_MODEL=gemini-2.5-flash
+
+# Optional escalation-only decision model
+DECISION_MODEL_ENABLED=1
+OPENAI_API_KEY=your_gateway_key
+OPENAI_BASE_URL=https://yinli.one/v1
+DECISION_MODEL=gpt-5.2
+DECISION_MODEL_GROUP=
+DECISION_SCORE_TRIGGER=0.55
+DECISION_MIN_ITERATION=2
+
+MAX_EVAL_ITERATIONS=3
+QUALITY_THRESHOLD=0.75
+```
 
 ### Where to place the formal key
 
@@ -216,30 +250,14 @@ For this project specifically, the simplest path is:
 - create `C:\ece_445\Agentic_Post_Processing\.env`
 - populate it from `.env.example`
 
-Example:
-
-```env
-MODEL_PROVIDER=openai_compatible
-OPENAI_API_KEY=your_real_gateway_key
-OPENAI_BASE_URL=https://yinli.one/v1
-VLM_MODEL=gpt-4.1-mini
-LLM_MODEL=gpt-4.1-mini
-MODEL_GROUP=
-MAX_EVAL_ITERATIONS=3
-QUALITY_THRESHOLD=0.75
-```
-
 ## Current assessment
 
-The pipeline is now in a better “real sample ready” prototype state than before:
-- architecture is additive and intact
-- border logic is more film-aware
-- characterization math is more consistent
-- base estimation is more robust
-- diagnostics are more actionable
-- classifier/evaluator model access is no longer locked to Gemini-only setup
+The system now has three meaningful layers:
+- stable Gemini main path
+- optional stronger high-level decision path via gateway / GPT-5.2
+- experimental RAW-aware `raw_pipeline/`
 
-But it is still a prototype, not a finished production negative pipeline.
+This preserves the current working pipeline while preparing a stronger escalation route for difficult images and future real-sample debugging.
 
 ## Recommended next step
 
