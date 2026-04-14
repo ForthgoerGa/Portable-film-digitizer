@@ -145,6 +145,90 @@ Interpretation:
   - poor upper-density estimation
   - normalization / clipping behavior
 
+## Gateway model integration update
+
+The project previously assumed Gemini-only access for classifier/evaluator model calls.
+This round added a practical OpenAI-compatible gateway path using the first tested key pattern.
+
+Files updated:
+- `config.py`
+- `agents/gateway_model.py`
+- `agents/classifier.py`
+- `agents/evaluator.py`
+- `.env.example`
+
+### What changed
+
+1. Added gateway-related config fields:
+- `OPENAI_API_KEY`
+- `OPENAI_BASE_URL`
+- `MODEL_PROVIDER`
+- `MODEL_GROUP`
+
+2. Added `agents/gateway_model.py`
+- A small OpenAI-compatible adapter that sends multimodal requests to:
+  - `<OPENAI_BASE_URL>/chat/completions`
+- Supports text + image inputs by converting images into data URLs.
+- Returns a simple `.text` response compatible with the existing classifier/evaluator code path.
+
+3. Updated `ClassifierAgent` and `EvaluatorAgent`
+- If `MODEL_PROVIDER=openai_compatible` and gateway env vars are present, they now use the gateway adapter.
+- If not, they still fall back to the old Gemini path or heuristic mode.
+
+4. Added `.env.example`
+- Documents the recommended integration pattern.
+
+### Model probing result for the first gateway key pattern
+
+Tested successfully through:
+- `https://yinli.one/v1/chat/completions`
+
+Models that returned valid minimal completions:
+- `gpt-4o-mini`
+- `gpt-4.1-mini`
+- `gpt-4.1`
+- `deepseek-chat` (backend surfaced as `deepseek-v3`)
+
+Model that responded less reliably in this quick probe:
+- `gemini-2.5-flash`
+  - returned HTTP 200, but the sampled response body was effectively unusable for this minimal check
+
+### Recommended default for this project
+
+Recommended starting point:
+- `MODEL_PROVIDER=openai_compatible`
+- `OPENAI_BASE_URL=https://yinli.one/v1`
+- `VLM_MODEL=gpt-4.1-mini`
+- `LLM_MODEL=gpt-4.1-mini`
+
+Cheaper alternative to test later:
+- `deepseek-chat`
+
+### Where to place the formal key
+
+Do **not** hardcode it into source files.
+Place the real key in one of these:
+- project `.env`
+- machine/user environment variables
+- OpenClaw secret/config environment if this project is run under OpenClaw
+
+For this project specifically, the simplest path is:
+- create `C:\ece_445\Agentic_Post_Processing\.env`
+- populate it from `.env.example`
+
+Example:
+
+```env
+MODEL_PROVIDER=openai_compatible
+OPENAI_API_KEY=your_real_gateway_key
+OPENAI_BASE_URL=https://yinli.one/v1
+VLM_MODEL=gpt-4.1-mini
+LLM_MODEL=gpt-4.1-mini
+MODEL_GROUP=
+MAX_EVAL_ITERATIONS=3
+QUALITY_THRESHOLD=0.75
+```
+
 ## Current assessment
 
 The pipeline is now in a better “real sample ready” prototype state than before:
@@ -153,6 +237,7 @@ The pipeline is now in a better “real sample ready” prototype state than bef
 - characterization math is more consistent
 - base estimation is more robust
 - diagnostics are more actionable
+- classifier/evaluator model access is no longer locked to Gemini-only setup
 
 But it is still a prototype, not a finished production negative pipeline.
 
