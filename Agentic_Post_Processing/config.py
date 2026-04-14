@@ -30,8 +30,12 @@ LLM_MODEL: str = _env_first("LLM_MODEL", "GEMINI_LLM_MODEL", default="gemini-2.5
 MODEL_GROUP: str = _env_first("MODEL_GROUP", default="")
 
 DECISION_MODEL_ENABLED: bool = _env_first("DECISION_MODEL_ENABLED", default="0").lower() in {"1", "true", "yes", "on"}
-DECISION_MODEL: str = _env_first("DECISION_MODEL", default="gpt-5.2")
+DECISION_MODEL: str = _env_first("DECISION_MODEL", default="gpt-5.1-chat")
 DECISION_MODEL_GROUP: str = _env_first("DECISION_MODEL_GROUP", default="")
+DECISION_MODEL_FALLBACK: str = _env_first("DECISION_MODEL_FALLBACK", default="gpt-5-mini")
+DECISION_MODEL_FALLBACK_GROUP: str = _env_first("DECISION_MODEL_FALLBACK_GROUP", default="")
+DECISION_MODEL_EXPERT: str = _env_first("DECISION_MODEL_EXPERT", default="gpt-5-pro")
+DECISION_MODEL_EXPERT_GROUP: str = _env_first("DECISION_MODEL_EXPERT_GROUP", default="")
 DECISION_SCORE_TRIGGER: float = float(_env_first("DECISION_SCORE_TRIGGER", default="0.55"))
 DECISION_MIN_ITERATION: int = int(_env_first("DECISION_MIN_ITERATION", default="2"))
 

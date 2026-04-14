@@ -91,10 +91,51 @@ def _build_default_model() -> Any | None:
         return None
     try:
         from agents.gateway_model import GatewayModelAdapter
-        return GatewayModelAdapter(model_name=config.DECISION_MODEL, group=config.DECISION_MODEL_GROUP)
+        return TieredDecisionModelAdapter(
+            primary_model=config.DECISION_MODEL,
+            primary_group=config.DECISION_MODEL_GROUP,
+            fallback_model=config.DECISION_MODEL_FALLBACK,
+            fallback_group=config.DECISION_MODEL_FALLBACK_GROUP,
+            expert_model=config.DECISION_MODEL_EXPERT,
+            expert_group=config.DECISION_MODEL_EXPERT_GROUP,
+            adapter_cls=GatewayModelAdapter,
+        )
     except Exception as exc:
         logger.warning("Gateway model adapter unavailable for decision model: %s", exc)
         return None
+
+
+class TieredDecisionModelAdapter:
+    def __init__(
+        self,
+        *,
+        primary_model: str,
+        primary_group: str,
+        fallback_model: str,
+        fallback_group: str,
+        expert_model: str,
+        expert_group: str,
+        adapter_cls,
+    ) -> None:
+        self._tiers = [
+            ("primary", adapter_cls(model_name=primary_model, group=primary_group)),
+            ("fallback", adapter_cls(model_name=fallback_model, group=fallback_group)),
+            ("expert", adapter_cls(model_name=expert_model, group=expert_group)),
+        ]
+
+    def generate_content(self, contents: list[Any]) -> Any:
+        last_exc: Exception | None = None
+        for tier_name, model in self._tiers:
+            try:
+                response = model.generate_content(contents)
+                setattr(response, "decision_tier", tier_name)
+                return response
+            except Exception as exc:
+                last_exc = exc
+                logger.warning("Decision tier %s failed: %s", tier_name, exc)
+        if last_exc is not None:
+            raise last_exc
+        raise RuntimeError("No decision model tiers configured")
 
 
 def _params_from_payload(payload: dict[str, Any]) -> PipelineParams:

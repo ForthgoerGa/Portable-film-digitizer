@@ -212,7 +212,10 @@ User-provided gateway screenshots additionally confirmed that the gateway also e
 
 The agreed direction is to use:
 - existing Gemini path for the main fast/rollback loop
-- `gpt-5.2` as the optional higher-level decision model
+- a tiered higher-level decision stack:
+  - primary: `gpt-5.1-chat`
+  - fallback: `gpt-5-mini`
+  - expert: `gpt-5-pro`
 
 ### Recommended environment setup
 
@@ -229,8 +232,12 @@ LLM_MODEL=gemini-2.5-flash
 DECISION_MODEL_ENABLED=1
 OPENAI_API_KEY=your_gateway_key
 OPENAI_BASE_URL=https://yinli.one/v1
-DECISION_MODEL=gpt-5.2
+DECISION_MODEL=gpt-5.1-chat
 DECISION_MODEL_GROUP=
+DECISION_MODEL_FALLBACK=gpt-5-mini
+DECISION_MODEL_FALLBACK_GROUP=
+DECISION_MODEL_EXPERT=gpt-5-pro
+DECISION_MODEL_EXPERT_GROUP=
 DECISION_SCORE_TRIGGER=0.55
 DECISION_MIN_ITERATION=2
 
@@ -254,7 +261,7 @@ For this project specifically, the simplest path is:
 
 The system now has three meaningful layers:
 - stable Gemini main path
-- optional stronger high-level decision path via gateway / GPT-5.2
+- optional stronger tiered high-level decision path via gateway (`gpt-5.1-chat` / `gpt-5-mini` / `gpt-5-pro`)
 - experimental RAW-aware `raw_pipeline/`
 
 This preserves the current working pipeline while preparing a stronger escalation route for difficult images and future real-sample debugging.
