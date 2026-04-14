@@ -62,6 +62,7 @@ def process_image(
     best_quality = None
     best_params = params
     best_iteration = 0
+    decision_events: list[dict[str, Any]] = []
 
     for iteration in range(1, max_iters + 1):
         logger.info(
@@ -85,6 +86,8 @@ def process_image(
                     "feedback": quality.feedback,
                     "evaluator_mode": _agent_mode(evaluator),
                     "classifier_mode": _agent_mode(classifier),
+                    "decision_tier": getattr(decision_agent, "last_tier", "disabled"),
+                    "decision_reason": getattr(decision_agent, "last_reason", ""),
                     "params": asdict(params),
                 })
             except Exception:
@@ -114,7 +117,15 @@ def process_image(
                 )
                 if decision is not None:
                     reason, suggested = decision
-                    logger.info("Decision model override for %s: %s", image_path.name, reason)
+                    tier = getattr(decision_agent, "last_tier", "unknown")
+                    logger.info("Decision model override for %s via %s: %s", image_path.name, tier, reason)
+                    decision_events.append({
+                        "iteration": iteration,
+                        "score": quality.score,
+                        "tier": tier,
+                        "reason": reason,
+                        "suggested_params": asdict(suggested),
+                    })
                     next_params = suggested
             params = next_params
 
@@ -131,6 +142,9 @@ def process_image(
         "film_type": film_type.value,
         "classifier_mode": _agent_mode(classifier),
         "evaluator_mode": _agent_mode(evaluator),
+        "decision_model_enabled": bool(decision_agent is not None and decision_agent.enabled()),
+        "decision_mode": getattr(decision_agent, "last_mode", "disabled"),
+        "decision_events": decision_events,
         "iterations": iteration,
         "selected_iteration": best_iteration,
         "final_score": best_quality.score,

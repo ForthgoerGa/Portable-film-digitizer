@@ -48,6 +48,8 @@ class DecisionAgent:
     def __init__(self, model: Any | None = None) -> None:
         self._model = model if model is not None else _build_default_model()
         self.last_mode = "disabled" if self._model is None else "gateway"
+        self.last_tier = "disabled" if self._model is None else "unknown"
+        self.last_reason = ""
 
     def enabled(self) -> bool:
         return self._model is not None
@@ -78,8 +80,12 @@ class DecisionAgent:
             payload = json.loads(str(getattr(response, 'text', '')).strip())
             reason = str(payload.get("reason", "Escalated strategy applied.")).strip()
             suggested = payload.get("suggested_params", {})
+            self.last_tier = str(getattr(response, "decision_tier", "unknown"))
+            self.last_reason = reason
             return reason, _params_from_payload(suggested)
         except Exception as exc:
+            self.last_tier = "failed"
+            self.last_reason = str(exc)
             logger.warning("DecisionAgent failed: %s", exc)
             return None
 
