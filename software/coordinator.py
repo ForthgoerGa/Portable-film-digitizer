@@ -7,8 +7,6 @@ from enum import Enum, auto
 from pathlib import Path
 
 import cv2
-import serial_comm
-from serial_comm import MockSerialInterface
 from stitcher import Stitcher, MockScanner
 from uploader import Uploader
 

@@ -8,7 +8,9 @@ const fractionsMeta = document.getElementById("fractionsMeta");
 const fractionsGrid = document.getElementById("fractionsGrid");
 const rawImage = document.getElementById("rawImage");
 const finalImage = document.getElementById("finalImage");
-const serialPortSelect = document.getElementById("serialPortSelect");
+const jogForwardBtn = document.getElementById("jogForward");
+const jogReverseBtn = document.getElementById("jogReverse");
+const stopJogBtn = document.getElementById("stopJog");
 
 let lastRenderedResultKey = null;
 
@@ -130,43 +132,25 @@ function cancelJob() {
     fetch("/cancel", { method: "POST" });
 }
 
-function loadPorts() {
-    fetch("/serial/ports")
-        .then((r) => r.json())
-        .then((list) => {
-            serialPortSelect.innerHTML = '<option value="">Select Port</option>';
-            list.forEach((p) => {
-                const opt = document.createElement("option");
-                opt.value = p.port;
-                opt.textContent = `${p.port} - ${p.description}`;
-                serialPortSelect.appendChild(opt);
-            });
-
-            if (list.length > 0) {
-                serialPortSelect.value = list[0].port;
-                serialPortSelect.onchange();
-            }
-        });
+function jogForward() {
+    fetch("/serial/jog/forward", { method: "POST" });
 }
 
-serialPortSelect.onchange = () => {
-    const port = serialPortSelect.value;
-    if (port) {
-        fetch("/serial/connect", {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ port }),
-        });
-    } else {
-        fetch("/serial/disconnect", { method: "POST" });
-    }
-};
+function jogReverse() {
+    fetch("/serial/jog/reverse", { method: "POST" });
+}
+
+function stopJog() {
+    fetch("/serial/stop", { method: "POST" });
+}
 
 startBtn.onclick = startJob;
 cancelBtn.onclick = cancelJob;
+jogForwardBtn.onclick = jogForward;
+jogReverseBtn.onclick = jogReverse;
+stopJogBtn.onclick = stopJog;
 
 document.addEventListener("DOMContentLoaded", () => {
     clearScanViews();
     pollStatus();
-    loadPorts();
 });

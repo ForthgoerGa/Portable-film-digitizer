@@ -5,12 +5,7 @@ from fastapi.responses import RedirectResponse
 from fastapi.staticfiles import StaticFiles
 
 from coordinator import coordinator
-from serial_comm import (
-    connect_serial,
-    disconnect_serial,
-    get_serial_status,
-    list_serial_ports,
-)
+from serial_comm import get_serial
 
 app = FastAPI()
 
@@ -22,12 +17,16 @@ if web_dir.exists():
 # Serve example fractions used by scan demo.
 scan_input_dir = coordinator.stitcher.tiles_dir
 if scan_input_dir.exists():
-    app.mount("/scan-input", StaticFiles(directory=str(scan_input_dir)), name="scan_input")
+    app.mount(
+        "/scan-input", StaticFiles(directory=str(scan_input_dir)), name="scan_input"
+    )
 
 # Serve generated scan outputs.
 scan_output_dir = coordinator.stitcher.output_dir
 scan_output_dir.mkdir(parents=True, exist_ok=True)
-app.mount("/scan-output", StaticFiles(directory=str(scan_output_dir)), name="scan_output")
+app.mount(
+    "/scan-output", StaticFiles(directory=str(scan_output_dir)), name="scan_output"
+)
 
 
 @app.get("/")
@@ -62,24 +61,31 @@ def cancel_job():
     return {"status": "cancel_requested"}
 
 
-@app.get("/serial/ports")
-def serial_ports():
-    return list_serial_ports()
+@app.post("/serial/jog/forward")
+def jog_forward():
+    serial = get_serial()
+    if serial and serial.is_open:
+        serial.jog_forward()
+        return {"status": "jogging forward"}
+    else:
+        raise HTTPException(status_code=500, detail="Serial not connected")
 
 
-@app.post("/serial/connect")
-def serial_connect(body: dict):
-    port = body.get("port")
-    if not port:
-        raise HTTPException(status_code=400, detail="Field 'port' required")
-    return connect_serial(port)
+@app.post("/serial/jog/reverse")
+def jog_reverse():
+    serial = get_serial()
+    if serial and serial.is_open:
+        serial.jog_reverse()
+        return {"status": "jogging reverse"}
+    else:
+        raise HTTPException(status_code=500, detail="Serial not connected")
 
 
-@app.post("/serial/disconnect")
-def serial_disconnect():
-    return disconnect_serial()
-
-
-@app.get("/serial/status")
-def serial_status():
-    return get_serial_status()
+@app.post("/serial/stop")
+def stop_jog():
+    serial = get_serial()
+    if serial and serial.is_open:
+        serial.stop()
+        return {"status": "stopped"}
+    else:
+        raise HTTPException(status_code=500, detail="Serial not connected")
