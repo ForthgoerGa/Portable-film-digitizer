@@ -206,3 +206,77 @@ $$V = f \times D_{step}$$
 $$N_{pulses} = \frac{\Delta L}{D_{step}}$$
 
 Using the equations above, we can modify the constants in our code to achieve any desired velocity and displacement, within physical reason. Future work remains to tune acceleration/deceleration profiles since we want to minimize missed steps, as we have an open-loop motor design.
+
+### 4/13 — Solder STM32 
+I attempted to solder the STM32 onto our PCB using several different methods since we didn't have a stencil with our order. At first, I tried to use solder paste with a heat gun to heat around the edges of the chip footprint. This did not work though, as the solder paste towards the center of the chip did not get hot enough. Since all the solder points were between the PCB and the chip, I also had no way to verify if connections were solid. The next thing I tried after consulting the E-Shop was to use a soldering iron, and try drag-soldering small beads of solder across all 50+ pins on the underside of the chip. I was able to achieve a satisfactory result with this, after checking for any shorts or missing solder with the X-Ray machine in the E-Shop. This was a time consuming step and took a few days of effort. However, we switched focus from trying to get the MCU working on the PCB because we were running short on time and didn't yet have a functional prototype. 
+
+[Insert image of soldered STM32]
+
+### 4/18 — STM32 Motor Controller and UART Listener
+
+One other part I was working on is the communication protocol between the Raspberry Pi and STM32 microcontroller. Our design relies on this architecture to achieve low-latency motor control while also having the processing power and memory resources necessary to take high-quality camera captures. While thinking about the boundary between the two devices, I found that a suitable approach would be to have the controlling device issue absolute coordinates to the microcontroller in the form of (X, Y) coordinates within the stage, which the latter would then transform into motor driver signals. This way all the motor computation can be kept as close to the hardware as possible, and our Raspberry Pi won’t be slowed down by having to manage the high-frequency motor control signals. 
+
+I configured our STM32 with the appropriate GPIO pins for STEP_X, DIR_X, STEP_Y, and DIR_Y. I also configured the TX/RX pins to be used as a USART interface, allowing for serial communication between itself and a master device. To make this UART control interface efficient I used interrupts instead of polling, so that the microcontroller did not waste valuable CPU cycles that could be used for motor and LED control. 
+
+Test Setup
+- Hardware: Connect the Raspberry Pi UART TX to the STM32 UART RX and rpi RX to STM32 TX
+- Measurement: Attach Channel 1 of a logic analyzer to the UART TX line and Channel 2 to the STM32 step output pin leading to the A4988 driver
+- Trigger: Use a Python script on the Pi to send a standardized motion packet (ex. MOVE_X:100, MOVE_Y:100)
+
+Procedure
+1. Initialize the Raspberry Pi serial port at 115,200 baudrate
+2. Trigger the logic analyzer to record on the falling edge of the UART start bit
+3. The STM32 firmware needs to parse the incoming string using an interrupt-based circular buffer to minimize CPU overhead
+4. Once the newline character (\n) is detected, the STM32 toggles the step pin for the NEMA 17 motor
+
+```c
+// Constants and Buffers
+#define BUFFER_SIZE 64
+char rx_buffer[BUFFER_SIZE]
+int rx_index = 0
+bool command_ready = false
+
+// --- UART RX Interrupt Handler ---
+void UART_RX_Interrupt_Handler():
+    char received_char = READ_UART_DATA_REGISTER()
+    
+    // Store in circular buffer
+    if (received_char != '\n' && rx_index < BUFFER_SIZE - 1):
+        rx_buffer[rx_index] = received_char
+        rx_index++
+    else:
+        // Newline detected: terminate string and signal the main loop
+        rx_buffer[rx_index] = '\0'
+        command_ready = true
+        DISABLE_UART_RX_INTERRUPT() // Pause RX until current command is handled
+
+// --- Main Loop ---
+void main():
+    INIT_GPIO_STEP_DIR_PINS()
+    INIT_UART_INTERRUPTS(115200)
+    
+    while (true):
+        if (command_ready):
+            // 1. Parse Packet (Ex: "MOVE_X:100")
+            int steps_x = 0, steps_y = 0
+            PARSE_COMMAND(rx_buffer, &steps_x, &steps_y)
+            
+            // 2. Set Direction Pins
+            SET_DIR_X(steps_x > 0 ? HIGH : LOW)
+            SET_DIR_Y(steps_y > 0 ? HIGH : LOW)
+            
+            // 3. Execute Motion (Square wave toggle)
+            for (int i = 0; i < ABS(steps_x); i++):
+                SET_STEP_X_PIN(HIGH)
+                DELAY_MICROSECONDS(500)
+                SET_STEP_X_PIN(LOW)
+                DELAY_MICROSECONDS(500)
+                
+            // 4. Reset for next packet
+            rx_index = 0
+            command_ready = false
+            ENABLE_UART_RX_INTERRUPT()
+```
+Conceptual design for STM32 motor control interface. Attribution: Google Gemini 3
+
+One design decision I made was to make the serial commands synchronous instead of asynchronous. This means that when the Pi issues a command, a response is only received over UART when the STM finishes issuing the computed number of pulses. This makes sure that the Raspberry Pi scan coordinator does not prematurely try to issue new movement commands while previous ones are still running, as this could cause inconsistencies in state.
