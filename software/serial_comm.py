@@ -21,6 +21,9 @@ class SerialInterface:
         self._ser = serial.Serial(
             port=self._port, baudrate=self._baudrate, timeout=self._timeout
         )
+        self._listening = True
+        self._thread = threading.Thread(target=self._listen_loop, daemon=True)
+        self._thread.start()
 
     def send_command(self, cmd: str):
         """Send ASCII command string to embedded device."""
@@ -28,6 +31,18 @@ class SerialInterface:
         with self._lock:
             self._ser.write(cmd.encode("ascii"))
             # No response expected per embedded protocol
+
+    def _listen_loop(self):
+        while self._listening:
+            with self._lock:
+                try:
+                    data = self._ser.readline()
+                    if data:
+                        decoded = data.decode("ascii").strip()
+                        if decoded:
+                            print(f"Received: {decoded}")
+                except (UnicodeDecodeError, serial.SerialException):
+                    pass  # Skip malformed data or serial errors
 
     def move(self, x: int, y: int):
         cmd_x = f"$MX:{x};"
@@ -45,6 +60,9 @@ class SerialInterface:
         self.send_command("q")
 
     def close(self):
+        self._listening = False
+        if hasattr(self, "_thread") and self._thread.is_alive():
+            self._thread.join(timeout=1.0)
         if self._ser and self._ser.is_open:
             self._ser.close()
 
