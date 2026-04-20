@@ -2,13 +2,12 @@
 /**
   ******************************************************************************
   * @file           : main.c
-  * @brief          : Main program body with UART Motor Control and Panic Stop
+  * @brief          : Motor Control via USART1
   ******************************************************************************
   */
 /* USER CODE END Header */
 /* Includes ------------------------------------------------------------------*/
 #include "main.h"
-#include "tim.h"
 #include "usart.h"
 #include "gpio.h"
 #include <stdio.h>
@@ -17,158 +16,218 @@
 
 /* Private function prototypes -----------------------------------------------*/
 void SystemClock_Config(void);
-/* USER CODE BEGIN PFP */
 void DWT_Init(void);
 void delay_us(uint32_t us);
-void Process_Command(char* buffer);
-/* USER CODE END PFP */
+void Process_Command(char* buffer, UART_HandleTypeDef *huart);
 
 /* Private variables ---------------------------------------------------------*/
 /* USER CODE BEGIN PV */
-uint8_t rx_byte;                // Single byte received from UART
-char rx_buffer[64];             // Buffer to store the incoming string
-uint8_t rx_index = 0;           // Current position in buffer
-volatile uint8_t cmd_ready = 0; // Flag set when ';' is received
-volatile uint8_t stop_flag = 0; // Emergency stop flag
+// UART 1 Variables
+uint8_t rx1_byte;
+char rx1_buffer[64];
+uint8_t rx1_index = 0;
+
+// Shared Logic Variables
+char active_cmd[64];
+volatile uint8_t cmd_ready = 0;
+volatile uint8_t stop_flag = 0;
+UART_HandleTypeDef *active_huart = NULL;
+
+typedef enum {
+    MOTOR_IDLE,
+    MOTOR_JOG_FWD,
+    MOTOR_JOG_REV,
+    MOTOR_BUSY_API
+} MotorState_t;
+
+volatile MotorState_t motor_state = MOTOR_IDLE;
+
+const uint32_t RAMP_START_DELAY = 800;
+const uint32_t RAMP_MIN_DELAY = 100;
 /* USER CODE END PV */
 
 /**
   * @brief  The application entry point.
-  * @retval int
   */
 int main(void)
 {
-  /* MCU Configuration--------------------------------------------------------*/
+  /* MCU Configuration */
   HAL_Init();
   SystemClock_Config();
 
-  /* Initialize all configured peripherals */
+  /* Initialize Peripherals */
   MX_GPIO_Init();
-  MX_USART2_UART_Init();
-  MX_TIM3_Init();
+  MX_USART1_UART_Init(); // Changed to USART1
 
   /* USER CODE BEGIN 2 */
   DWT_Init();
 
-  // Start the UART Interrupt to listen for the first byte
-  HAL_UART_Receive_IT(&huart2, &rx_byte, 1);
+  // Start listening only on USART1
+  HAL_UART_Receive_IT(&huart1, &rx1_byte, 1);
 
-  // Optional: Boot message to confirm serial is working
-  char boot_msg[] = "Motor Controller Ready. Press 'q' to panic stop.\r\n";
-  HAL_UART_Transmit(&huart2, (uint8_t*)boot_msg, strlen(boot_msg), 100);
+  uint32_t current_jog_delay = RAMP_START_DELAY;
+  uint32_t ramp_counter = 0;
+  uint32_t last_heartbeat = 0;
+
+  char boot_msg[] = "\r\n--- Motor Interface Ready (USART1) ---\r\n"
+                    "Use WASD to Jog, $MX:steps; for API, Q to stop.\r\n";
+  HAL_UART_Transmit(&huart1, (uint8_t*)boot_msg, strlen(boot_msg), 100);
   /* USER CODE END 2 */
 
   /* Infinite loop */
-  /* USER CODE BEGIN WHILE */
   while (1)
   {
-    if (cmd_ready)
+    // LED logic: Solid if motor active, Blinking if idle (LD2 usually PA5)
+    if (motor_state != MOTOR_IDLE)
     {
-      Process_Command(rx_buffer);
-      cmd_ready = 0; // Reset flag after processing
+        HAL_GPIO_WritePin(GPIOA, GPIO_PIN_5, GPIO_PIN_SET);
     }
-    /* USER CODE END WHILE */
+    else
+    {
+        if (HAL_GetTick() - last_heartbeat > 500) {
+            HAL_GPIO_TogglePin(GPIOA, GPIO_PIN_5);
+            last_heartbeat = HAL_GetTick();
+        }
+    }
 
-    /* USER CODE BEGIN 3 */
+    // 1. Handle Precise API Movements
+    if (cmd_ready && active_huart != NULL)
+    {
+      motor_state = MOTOR_BUSY_API;
+      Process_Command(active_cmd, active_huart);
+      motor_state = MOTOR_IDLE;
+      cmd_ready = 0;
+    }
+
+    // 2. Ramped Toggle Jogging Logic
+    if (motor_state == MOTOR_JOG_FWD || motor_state == MOTOR_JOG_REV)
+    {
+      HAL_GPIO_WritePin(DIR_X_PIN_GPIO_Port, DIR_X_PIN_Pin,
+                       (motor_state == MOTOR_JOG_FWD) ? GPIO_PIN_RESET : GPIO_PIN_SET);
+
+      HAL_GPIO_WritePin(STEP_X_PIN_GPIO_Port, STEP_X_PIN_Pin, GPIO_PIN_SET);
+      delay_us(current_jog_delay);
+      HAL_GPIO_WritePin(STEP_X_PIN_GPIO_Port, STEP_X_PIN_Pin, GPIO_PIN_RESET);
+      delay_us(current_jog_delay);
+
+      if (current_jog_delay > RAMP_MIN_DELAY) {
+          ramp_counter++;
+          if (ramp_counter >= 2) {
+              current_jog_delay--;
+              ramp_counter = 0;
+          }
+      }
+    }
+    else
+    {
+      current_jog_delay = RAMP_START_DELAY;
+      ramp_counter = 0;
+    }
   }
-  /* USER CODE END 3 */
 }
 
 /**
-  * @brief UART Receive Callback - Triggered every time a byte arrives
+  * @brief UART Rx Callback for USART1
   */
 void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart)
 {
-  if (huart->Instance == USART2)
-  {
-    // --- PANIC BUTTON CHECK ---
-    if (rx_byte == 'q')
-    {
+  if (huart->Instance == USART1) { // Changed to Instance check for USART1
+    if (rx1_byte == 'q') {
       stop_flag = 1;
-      char panic_alert[] = "\r\n!!! PANIC STOP TRIGGERED !!!\r\n";
-      HAL_UART_Transmit(huart, (uint8_t*)panic_alert, strlen(panic_alert), 50);
+      motor_state = MOTOR_IDLE;
+      HAL_UART_Transmit(huart, (uint8_t*)"\r\nSTOPPED\r\n", 11, 10);
+    }
+    else if (rx1_byte == 'w' || rx1_byte == 'd') {
+      stop_flag = 0;
+      motor_state = MOTOR_JOG_FWD;
+      HAL_UART_Transmit(huart, (uint8_t*)"\r\nRunning FWD\r\n", 15, 10);
+    }
+    else if (rx1_byte == 's' || rx1_byte == 'a') {
+      stop_flag = 0;
+      motor_state = MOTOR_JOG_REV;
+      HAL_UART_Transmit(huart, (uint8_t*)"\r\nRunning REV\r\n", 15, 10);
+    }
+    else {
+      if (rx1_byte == ';') {
+        rx1_buffer[rx1_index] = '\0';
+        strcpy(active_cmd, rx1_buffer);
+        active_huart = huart;
+        cmd_ready = 1;
+        rx1_index = 0;
+      }
+      else if (rx1_byte == '$') {
+        rx1_index = 0;
+      }
+      else if (rx1_index < 63) {
+        rx1_buffer[rx1_index++] = rx1_byte;
+      }
     }
 
-    // --- DEBUG ECHO ---
-    HAL_UART_Transmit(huart, &rx_byte, 1, 10);
-
-    // --- PROTOCOL PARSING ---
-    if (rx_byte == ';') // End of command
-    {
-      rx_buffer[rx_index] = '\0'; // Null terminate string
-      cmd_ready = 1;
-      rx_index = 0;
-    }
-    else if (rx_byte == '$') // Start of command
-    {
-      rx_index = 0;
-    }
-    else if (rx_index < 63)
-    {
-      rx_buffer[rx_index++] = rx_byte;
-    }
-
-    // Restart interrupt to receive next byte
-    HAL_UART_Receive_IT(&huart2, &rx_byte, 1);
+    // Echo character back and re-enable interrupt
+    HAL_UART_Transmit(huart, &rx1_byte, 1, 10);
+    HAL_UART_Receive_IT(huart, &rx1_byte, 1);
   }
 }
 
 /**
-  * @brief Logic to parse and execute commands
+  * @brief API Movement Processing
   */
-void Process_Command(char* buffer)
+void Process_Command(char* buffer, UART_HandleTypeDef *huart)
 {
-  // Send an acknowledgment back to the terminal
-  char msg[64];
-  sprintf(msg, "Executing: %s\r\n", buffer);
-  HAL_UART_Transmit(&huart2, (uint8_t*)msg, strlen(msg), 100);
-
-  // Format expected: "MX:1000" (Move X)
   if (strncmp(buffer, "MX:", 3) == 0)
   {
     int32_t steps = atoi(&buffer[3]);
-    uint32_t speed_delay = 800;  // Start slow for every move
-    uint32_t target_delay = 100; // Final speed
+    uint32_t speed_delay = RAMP_START_DELAY;
+    stop_flag = 0;
 
-    stop_flag = 0; // Reset stop flag before starting move
+    HAL_GPIO_WritePin(DIR_X_PIN_GPIO_Port, DIR_X_PIN_Pin, (steps > 0) ? GPIO_PIN_RESET : GPIO_PIN_SET);
+    steps = (steps < 0) ? -steps : steps;
 
-    // Set Direction
-    if (steps > 0) {
-      HAL_GPIO_WritePin(DIR_X_PIN_GPIO_Port, DIR_X_PIN_Pin, GPIO_PIN_SET);
-    } else {
-      HAL_GPIO_WritePin(DIR_X_PIN_GPIO_Port, DIR_X_PIN_Pin, GPIO_PIN_RESET);
-      steps = -steps; // Make steps positive for the loop
-    }
-
-    // Move loop with Ramp and Panic Check
     for (int32_t i = 0; i < steps; i++)
     {
-      // Check if 'q' was pressed during the move
-      if (stop_flag)
-      {
-        char stop_ack[] = "Motor Aborted.\r\n";
-        HAL_UART_Transmit(&huart2, (uint8_t*)stop_ack, strlen(stop_ack), 50);
-        break;
-      }
-
+      if (stop_flag) break;
       HAL_GPIO_WritePin(STEP_X_PIN_GPIO_Port, STEP_X_PIN_Pin, GPIO_PIN_SET);
       delay_us(speed_delay);
       HAL_GPIO_WritePin(STEP_X_PIN_GPIO_Port, STEP_X_PIN_Pin, GPIO_PIN_RESET);
       delay_us(speed_delay);
-
-      // Simple ramp down of delay (increase speed)
-      if (speed_delay > target_delay && i % 2 == 0) {
-        speed_delay--;
-      }
+      if (speed_delay > RAMP_MIN_DELAY && i % 2 == 0) speed_delay--;
     }
 
-    stop_flag = 0; // Ensure flag is clear for next command
+    char msg[128];
+    sprintf(msg, "\r\n%s: %s\r\n", stop_flag ? "STOPPED" : "OK", buffer);
+    HAL_UART_Transmit(huart, (uint8_t*)msg, strlen(msg), 100);
+    stop_flag = 0;
   }
 }
 
 /**
-  * @brief System Clock Configuration
+  * @brief DWT Initialization - Robust Sequence
   */
+void DWT_Init(void) {
+  CoreDebug->DEMCR |= CoreDebug_DEMCR_TRCENA_Msk;
+  DWT->CYCCNT = 0;
+  DWT->CTRL |= DWT_CTRL_CYCCNTENA_Msk;
+}
+
+/**
+  * @brief Microsecond delay using CPU Cycle Counter
+  */
+void delay_us(uint32_t us) {
+  uint32_t startTick = DWT->CYCCNT;
+  uint32_t delayTicks = us * (SystemCoreClock / 1000000);
+  while (DWT->CYCCNT - startTick < delayTicks);
+}
+
+/**
+  * @brief UART Error Callback
+  */
+void HAL_UART_ErrorCallback(UART_HandleTypeDef *huart)
+{
+    if (huart->Instance == USART1) {
+        HAL_UART_Receive_IT(&huart1, &rx1_byte, 1);
+    }
+}
+
 void SystemClock_Config(void)
 {
   RCC_OscInitTypeDef RCC_OscInitStruct = {0};
@@ -188,8 +247,7 @@ void SystemClock_Config(void)
   RCC_OscInitStruct.PLL.PLLQ = 7;
   HAL_RCC_OscConfig(&RCC_OscInitStruct);
 
-  RCC_ClkInitStruct.ClockType = RCC_CLOCKTYPE_HCLK|RCC_CLOCKTYPE_SYSCLK
-                              |RCC_CLOCKTYPE_PCLK1|RCC_CLOCKTYPE_PCLK2;
+  RCC_ClkInitStruct.ClockType = RCC_CLOCKTYPE_HCLK|RCC_CLOCKTYPE_SYSCLK|RCC_CLOCKTYPE_PCLK1|RCC_CLOCKTYPE_PCLK2;
   RCC_ClkInitStruct.SYSCLKSource = RCC_SYSCLKSOURCE_PLLCLK;
   RCC_ClkInitStruct.AHBCLKDivider = RCC_SYSCLK_DIV1;
   RCC_ClkInitStruct.APB1CLKDivider = RCC_HCLK_DIV2;
@@ -197,19 +255,4 @@ void SystemClock_Config(void)
   HAL_RCC_ClockConfig(&RCC_ClkInitStruct, FLASH_LATENCY_2);
 }
 
-void DWT_Init(void) {
-  CoreDebug->DEMCR |= CoreDebug_DEMCR_TRCENA_Msk;
-  DWT->CYCCNT = 0;
-  DWT->CTRL |= DWT_CTRL_CYCCNTENA_Msk;
-}
-
-void delay_us(uint32_t us) {
-  uint32_t startTick = DWT->CYCCNT;
-  uint32_t delayTicks = us * (SystemCoreClock / 1000000);
-  while (DWT->CYCCNT - startTick < delayTicks);
-}
-
-void Error_Handler(void) {
-  __disable_irq();
-  while (1) {}
-}
+void Error_Handler(void) { __disable_irq(); while (1) {} }
