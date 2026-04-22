@@ -5,14 +5,19 @@ import RPi.GPIO as GPIO
 # ----------------------------
 # GPIO SETUP
 # ----------------------------
-STEP_X = 20
-STEP_Y = 21
+STEP_X = 21
+STEP_Y = 20
+
+DIR_X = 26
+DIR_Y = 19
 
 GPIO.setmode(GPIO.BCM)
 GPIO.setwarnings(False)
 
 GPIO.setup(STEP_X, GPIO.OUT)
 GPIO.setup(STEP_Y, GPIO.OUT)
+GPIO.setup(DIR_X, GPIO.OUT)
+GPIO.setup(DIR_Y, GPIO.OUT)
 
 GPIO.output(STEP_X, GPIO.LOW)
 GPIO.output(STEP_Y, GPIO.LOW)
@@ -20,104 +25,135 @@ GPIO.output(STEP_Y, GPIO.LOW)
 # ----------------------------
 # CONFIG
 # ----------------------------
-RPM = 500  # adjust as needed
-SPR = 200 * 16  # steps per revolution (typical stepper)
-step_delay = 0.000001 # steady-state delay fallback
+RPM = 500
+SPR = 200 * 16
+
+STEP_DELAY = 0.000001
+
+RAMP_START = 0.01
+RAMP_FACTOR = 0.98
+
 
 # ----------------------------
-# STATE
+# MOTOR CLASS
 # ----------------------------
-running_x = False
-running_y = False
+class StepperMotor:
+    def __init__(self, step_pin, dir_pin, invert_dir=False):
+        self.step_pin = step_pin
+        self.dir_pin = dir_pin
+        self.invert_dir = invert_dir
 
-# ----------------------------
-# CORE STEP FUNCTION
-# ----------------------------
-def step_once(pin, delay):
-    GPIO.output(pin, GPIO.HIGH)
-    time.sleep(delay)
-    GPIO.output(pin, GPIO.LOW)
-    time.sleep(delay)
+        self.running = False
+        self.direction = 1  # 1 = forward, 0 = backward
 
-# ----------------------------
-# RAMP GENERATOR
-# ----------------------------
-def ramp_up():
-    target_delay = 60 / (RPM * SPR * 2)
-    delay = 0.01
+    def set_direction(self, direction):
+        self.direction = direction
 
-    while delay > target_delay:
-        delay *= 0.98
-        yield delay
+    def set_gpio_dir(self):
+        value = GPIO.HIGH if self.direction else GPIO.LOW
 
-# ----------------------------
-# MOTOR LOOPS
-# ----------------------------
-def motor_x_loop():
-    global running_x
+        if self.invert_dir:
+            value = GPIO.LOW if value == GPIO.HIGH else GPIO.HIGH
 
-    while True:
-        if running_x:
-            for d in ramp_up():
-                if not running_x:
-                    break
-                step_once(STEP_X, d)
+        GPIO.output(self.dir_pin, value)
 
-            while running_x:
-                step_once(STEP_X, step_delay)
-        else:
-            GPIO.output(STEP_X, GPIO.LOW)
-            time.sleep(0.01)
+    def step(self, delay):
+        GPIO.output(self.step_pin, GPIO.HIGH)
+        time.sleep(delay)
+        GPIO.output(self.step_pin, GPIO.LOW)
+        time.sleep(delay)
 
+    def ramp_up(self):
+        target_delay = 60 / (RPM * SPR * 2)
+        delay = RAMP_START
 
-def motor_y_loop():
-    global running_y
+        while delay > target_delay:
+            delay *= RAMP_FACTOR
+            yield delay
 
-    while True:
-        if running_y:
-            for d in ramp_up():
-                if not running_y:
-                    break
-                step_once(STEP_Y, d)
+    def loop(self):
+        while True:
+            if self.running:
+                self.set_gpio_dir()
 
-            while running_y:
-                step_once(STEP_Y, step_delay)
-        else:
-            GPIO.output(STEP_Y, GPIO.LOW)
-            time.sleep(0.01)
+                # acceleration phase
+                for d in self.ramp_up():
+                    if not self.running:
+                        break
+                    self.set_gpio_dir()
+                    self.step(d)
+
+                # steady state
+                while self.running:
+                    self.set_gpio_dir()
+                    self.step(STEP_DELAY)
+
+            else:
+                GPIO.output(self.step_pin, GPIO.LOW)
+                time.sleep(0.01)
+
 
 # ----------------------------
-# INPUT CONTROL LOOP
+# CREATE MOTORS
+# ----------------------------
+motor_x = StepperMotor(STEP_X, DIR_X, invert_dir=True)  # fix reversed axis if needed
+motor_y = StepperMotor(STEP_Y, DIR_Y)
+
+
+# ----------------------------
+# INPUT LOOP
 # ----------------------------
 def input_loop():
-    global running_x, running_y
-
     print("Controls:")
-    print("  x -> toggle motor X")
-    print("  y -> toggle motor Y")
+    print("  w -> Y negative (move)")
+    print("  s -> Y positive (move)")
+    print("  a -> X negative (move)")
+    print("  d -> X positive (move)")
+    print("  ENTER (blank) -> STOP ALL MOTORS")
     print("  q -> quit")
 
     while True:
         cmd = input("> ").strip().lower()
 
-        if cmd == "x":
-            running_x = not running_x
-            print("Motor X:", "ON" if running_x else "OFF")
+        # ----------------------------
+        # GLOBAL STOP
+        # ----------------------------
+        if cmd == "":
+            motor_x.running = False
+            motor_y.running = False
+            print("STOP ALL MOTORS")
 
-        elif cmd == "y":
-            running_y = not running_y
-            print("Motor Y:", "ON" if running_y else "OFF")
+        elif cmd == "w":
+            motor_y.set_direction(0)
+            motor_y.running = True
+            print("Y: backward")
+
+        elif cmd == "s":
+            motor_y.set_direction(1)
+            motor_y.running = True
+            print("Y: forward")
+
+        elif cmd == "a":
+            motor_x.set_direction(0)
+            motor_x.running = True
+            print("X: left")
+
+        elif cmd == "d":
+            motor_x.set_direction(1)
+            motor_x.running = True
+            print("X: right")
 
         elif cmd == "q":
             print("Exiting...")
-            running_x = False
-            running_y = False
+            motor_x.running = False
+            motor_y.running = False
             GPIO.cleanup()
             break
+
 
 # ----------------------------
 # START THREADS
 # ----------------------------
-threading.Thread(target=motor_x_loop, daemon=True).start()
-threading.Thread(target=motor_y_loop, daemon=True).start()
+threading.Thread(target=motor_x.loop, daemon=True).start()
+threading.Thread(target=motor_y.loop, daemon=True).start()
 threading.Thread(target=input_loop, daemon=False).start()
