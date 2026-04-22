@@ -20,9 +20,9 @@ GPIO.output(STEP_Y, GPIO.LOW)
 # ----------------------------
 # CONFIG
 # ----------------------------
-RPM = 120  # adjust as needed
-SPR = 200  # steps per revolution (typical stepper)
-step_delay = 0.005  # steady-state delay fallback
+RPM = 500  # adjust as needed
+SPR = 200 * 16  # steps per revolution (typical stepper)
+step_delay = 0.000001 # steady-state delay fallback
 
 # ----------------------------
 # STATE
