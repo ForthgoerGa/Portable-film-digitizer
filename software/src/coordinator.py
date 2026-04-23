@@ -7,15 +7,28 @@ progress monitoring, and cancellation support.
 
 import time
 import threading
+import shutil
 from enum import Enum
 from typing import Dict, Any, Optional
 
 try:
     from .scanner import Scanner
-    from .config import X_SEGMENTS, Y_SEGMENTS, X_STEPS_PER_SEG, Y_STEPS_PER_SEG
+    from .config import (
+        X_SEGMENTS,
+        Y_SEGMENTS,
+        X_STEPS_PER_SEG,
+        Y_STEPS_PER_SEG,
+        CAPTURES_DIR,
+    )
 except ImportError:
     from scanner import Scanner
-    from config import X_SEGMENTS, Y_SEGMENTS, X_STEPS_PER_SEG, Y_STEPS_PER_SEG
+    from config import (
+        X_SEGMENTS,
+        Y_SEGMENTS,
+        X_STEPS_PER_SEG,
+        Y_STEPS_PER_SEG,
+        CAPTURES_DIR,
+    )
 
 
 class ScannerState(Enum):
@@ -64,6 +77,11 @@ class ScannerCoordinator:
             self.current_col = 0
             self.cancel_flag = False
             self.error_message = ""
+
+            # Prepare captures directory
+            if CAPTURES_DIR.exists():
+                shutil.rmtree(CAPTURES_DIR)
+            CAPTURES_DIR.mkdir(parents=True, exist_ok=True)
 
             self._scan_thread = threading.Thread(
                 target=self._run_scan, args=(film_format,), daemon=True

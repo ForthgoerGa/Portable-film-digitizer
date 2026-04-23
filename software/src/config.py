@@ -4,6 +4,8 @@ Configuration constants for the film digitizer scanner.
 This module centralizes all hardware and scanning parameters.
 """
 
+from pathlib import Path
+
 # GPIO pin assignments
 STEP_X = 21
 STEP_Y = 20
@@ -26,3 +28,6 @@ X_SEGMENTS = 4
 Y_SEGMENTS = 2
 X_STEPS_PER_SEG = 20000
 Y_STEPS_PER_SEG = 8000
+
+# Capture output directory
+CAPTURES_DIR = Path(__file__).parent / "captures"

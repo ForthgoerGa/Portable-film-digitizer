@@ -24,8 +24,10 @@ class ScannerUI {
         this.yForwardBtn = document.getElementById('yForwardBtn');
         this.homeBtn = document.getElementById('homeBtn');
         this.setHomeBtn = document.getElementById('setHomeBtn');
-        this.motorStatus = document.getElementById('motorStatus');
-        this.motorPosition = document.getElementById('motorPosition');
+        this.refreshCapturesBtn = document.getElementById('refreshCapturesBtn');
+        this.capturesTree = document.getElementById('captures-tree');
+        this.capturesPath = document.getElementById('captures-path');
+        this.captureImage = document.getElementById('capture-image');
 
         // Bind event handlers
         this.bindEvents();
@@ -46,6 +48,9 @@ class ScannerUI {
         this.yForwardBtn.addEventListener('click', () => this.moveMotor('y', this.getStepSize()));
         this.homeBtn.addEventListener('click', () => this.homeMotors());
         this.setHomeBtn.addEventListener('click', () => this.setHome());
+
+        // Captures viewer events
+        this.refreshCapturesBtn.addEventListener('click', () => this.loadCapturesTree());
     }
 
     getStepSize() {
@@ -210,9 +215,71 @@ class ScannerUI {
             this.motorStatus.textContent = 'Ready';
         }, 3000);
     }
+
+    async loadCapturesTree() {
+        try {
+            const response = await fetch('/captures/tree');
+            if (response.ok) {
+                const tree = await response.json();
+                this.renderCapturesTree(tree);
+            } else {
+                console.error('Failed to load captures tree');
+            }
+        } catch (error) {
+            console.error('Error loading captures tree:', error);
+        }
+    }
+
+    renderCapturesTree(tree) {
+        this.capturesTree.innerHTML = '';
+        if (tree) {
+            this.capturesTree.appendChild(this.buildTreeElement(tree));
+        }
+    }
+
+    buildTreeElement(node, parentPath = '') {
+        const li = document.createElement('li');
+        const item = document.createElement('div');
+        item.className = `tree-item ${node.type}`;
+        item.textContent = node.name;
+        item.onclick = () => this.selectCaptureItem(parentPath ? `${parentPath}/${node.name}` : node.name, node.type);
+
+        li.appendChild(item);
+
+        if (node.type === 'directory' && node.children) {
+            const ul = document.createElement('ul');
+            ul.className = 'tree-children tree-collapsed';
+
+            item.onclick = (e) => {
+                e.stopPropagation();
+                ul.classList.toggle('tree-collapsed');
+                item.classList.toggle('tree-expanded');
+                this.selectCaptureItem(parentPath ? `${parentPath}/${node.name}` : node.name, node.type);
+            };
+
+            node.children.forEach(child => {
+                ul.appendChild(this.buildTreeElement(child, parentPath ? `${parentPath}/${node.name}` : node.name));
+            });
+            li.appendChild(ul);
+        }
+
+        return li;
+    }
+
+    async selectCaptureItem(path, type) {
+        this.capturesPath.textContent = path;
+
+        if (type === 'file') {
+            this.captureImage.src = `/captures/file?path=${encodeURIComponent(path)}`;
+            this.captureImage.style.display = 'block';
+        } else {
+            this.captureImage.style.display = 'none';
+        }
+    }
 }
 
 // Initialize UI when DOM is loaded
 document.addEventListener('DOMContentLoaded', () => {
-    new ScannerUI();
+    const ui = new ScannerUI();
+    ui.loadCapturesTree(); // Load captures on startup
 });

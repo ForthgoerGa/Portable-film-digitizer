@@ -91,6 +91,25 @@
                     <span id="motorStatus" class="status">Ready</span>
                 </div>
             </section>
+
+            <!-- Captures Viewer Section -->
+            <section class="captures-viewer">
+                <h2>Captured Images</h2>
+                <div class="captures-controls">
+                    <button id="refreshCapturesBtn" class="btn btn-secondary">Refresh</button>
+                </div>
+                <div class="captures-container">
+                    <div class="captures-sidebar">
+                        <ul id="captures-tree"></ul>
+                    </div>
+                    <div class="captures-content">
+                        <div id="captures-path">No image selected</div>
+                        <div class="image-container">
+                            <img id="capture-image" alt="Selected capture" style="display: none;">
+                        </div>
+                    </div>
+                </div>
+            </section>
         </main>
     </div>
 

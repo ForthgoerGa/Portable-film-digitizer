@@ -7,6 +7,7 @@ and basic scanning operations.
 
 import time
 from typing import Callable
+from pathlib import Path
 
 import RPi.GPIO as GPIO
 
@@ -25,7 +26,9 @@ try:
         Y_SEGMENTS,
         X_STEPS_PER_SEG,
         Y_STEPS_PER_SEG,
+        CAPTURES_DIR,
     )
+    from .picamera2 import Picamera2
 except ImportError:
     from config import (
         STEP_X,
@@ -41,7 +44,9 @@ except ImportError:
         Y_SEGMENTS,
         X_STEPS_PER_SEG,
         Y_STEPS_PER_SEG,
+        CAPTURES_DIR,
     )
+    from picamera2 import Picamera2
 
 
 class StepperMotor:
@@ -141,8 +146,11 @@ class Scanner:
         self.motor_x = StepperMotor(STEP_X, DIR_X, invert_dir=True)
         self.motor_y = StepperMotor(STEP_Y, DIR_Y)
 
-        # Capture callback (can be overridden for testing)
-        self.capture_callback: Callable[[int, int], None] = lambda row, col: None
+        # Initialize camera
+        self.camera = Picamera2()
+        config = self.camera.create_still_configuration()
+        self.camera.configure(config)
+        self.camera.start()
 
     def set_capture_callback(self, callback: Callable[[int, int], None]) -> None:
         """Set the callback function for image capture."""
@@ -192,8 +200,11 @@ class Scanner:
 
     def capture(self, row: int, col: int) -> None:
         """Capture an image at the specified grid position."""
-        self.capture_callback(row, col)
+        filename = CAPTURES_DIR / f"row_{row}_col_{col}.jpg"
+        self.camera.capture_file(str(filename))
+        print(f"Captured {filename}")
 
     def cleanup(self) -> None:
         """Clean up GPIO resources."""
+        self.camera.close()
         GPIO.cleanup()

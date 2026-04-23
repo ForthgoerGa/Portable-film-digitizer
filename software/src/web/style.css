@@ -222,29 +222,95 @@ h3 {
     color: var(--dark-text);
 }
 
-/* Responsive Design */
-@media (max-width: 600px) {
-    .container {
-        padding: 10px;
-    }
+/* Captures Viewer Section */
+.captures-viewer {
+    margin-top: 40px;
+}
 
-    .axis-controls {
-        flex-direction: column;
-        gap: 20px;
-    }
+.captures-controls {
+    margin-bottom: 20px;
+}
 
-    .control-group {
-        flex-direction: column;
-        align-items: stretch;
-    }
+.captures-container {
+    display: flex;
+    gap: 20px;
+    background-color: white;
+    border: 1px solid var(--border-color);
+    border-radius: 4px;
+    padding: 20px;
+    box-shadow: var(--shadow);
+}
 
-    .control-group label {
-        min-width: auto;
-        margin-bottom: 5px;
-    }
+.captures-sidebar {
+    width: 250px;
+    border-right: 1px solid var(--border-color);
+    padding-right: 15px;
+}
 
-    .status-item {
-        flex-direction: column;
-        gap: 5px;
-    }
+.captures-content {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+}
+
+#captures-path {
+    font-weight: 500;
+    margin-bottom: 15px;
+    padding: 10px;
+    background-color: var(--light-bg);
+    border-radius: 4px;
+    border: 1px solid var(--border-color);
+}
+
+.image-container {
+    flex: 1;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    border: 1px solid var(--border-color);
+    border-radius: 4px;
+    background-color: var(--light-bg);
+    min-height: 400px;
+}
+
+#capture-image {
+    max-width: 100%;
+    max-height: 100%;
+    border-radius: 4px;
+}
+
+#captures-tree {
+    list-style: none;
+    padding: 0;
+}
+
+#captures-tree .tree-item {
+    cursor: pointer;
+    padding: 4px 0;
+    border-radius: 3px;
+    transition: background-color 0.2s;
+}
+
+#captures-tree .tree-item:hover {
+    background-color: var(--light-bg);
+}
+
+#captures-tree .tree-item.directory::before {
+    content: "📁 ";
+}
+
+#captures-tree .tree-item.file::before {
+    content: "📄 ";
+}
+
+#captures-tree .tree-children {
+    padding-left: 20px;
+}
+
+#captures-tree .tree-expanded::before {
+    content: "📂 ";
+}
+
+#captures-tree .tree-collapsed {
+    display: none;
 }
