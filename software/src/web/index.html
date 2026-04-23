@@ -10,6 +10,18 @@
     <div class="container">
         <header>
             <h1>Film Digitizer Scanner</h1>
+            <div class="motor-status-bar" aria-label="Motor status">
+                <div class="motor-status-row">
+                    <span class="motor-axis">X</span>
+                    <span id="motorXState" class="motor-state status-reset">RESET</span>
+                    <span id="motorXPosition" class="motor-position">0</span>
+                </div>
+                <div class="motor-status-row">
+                    <span class="motor-axis">Y</span>
+                    <span id="motorYState" class="motor-state status-reset">RESET</span>
+                    <span id="motorYPosition" class="motor-position">0</span>
+                </div>
+            </div>
         </header>
 
         <main>
@@ -44,51 +56,10 @@
                         <span class="label">Grid Position:</span>
                         <span id="scanPosition" class="value">0, 0</span>
                     </div>
-                    <div class="status-item">
-                        <span class="label">Motor Position:</span>
-                        <span id="motorPosition" class="value">X: 0, Y: 0</span>
-                    </div>
                 </div>
 
                 <div class="progress-bar">
                     <div id="progressFill" class="progress-fill"></div>
-                </div>
-            </section>
-
-            <!-- Motor Control Section -->
-            <section class="motor-control">
-                <h2>Manual Motor Control</h2>
-
-                <div class="control-group">
-                    <label for="stepSize">Step Size:</label>
-                    <input type="number" id="stepSize" value="1000" min="1" max="10000">
-                </div>
-
-                <div class="axis-controls">
-                    <div class="axis-group">
-                        <h3>X Axis (Left/Right)</h3>
-                        <div class="buttons">
-                            <button id="xReverseBtn" class="btn">◀ Left</button>
-                            <button id="xForwardBtn" class="btn">Right ▶</button>
-                        </div>
-                    </div>
-
-                    <div class="axis-group">
-                        <h3>Y Axis (Up/Down)</h3>
-                        <div class="buttons">
-                            <button id="yReverseBtn" class="btn">▲ Up</button>
-                            <button id="yForwardBtn" class="btn">Down ▼</button>
-                        </div>
-                    </div>
-                </div>
-
-                <div class="control-group">
-                    <button id="homeBtn" class="btn btn-secondary">Return to Home</button>
-                    <button id="setHomeBtn" class="btn btn-secondary">Set Home</button>
-                </div>
-
-                <div class="motor-status">
-                    <span id="motorStatus" class="status">Ready</span>
                 </div>
             </section>
 

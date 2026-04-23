@@ -142,27 +142,29 @@ def cmd_move(args: list) -> None:
     timeout = max(
         300, abs(x) // 10000 + abs(y) // 10000
     )  # 300s base + 1s per 10k steps
-    result = api_post("/motor/move", {"x": x, "y": y}, timeout=timeout)
+    result = api_post("/scan/move", {"x": x, "y": y}, timeout=timeout)
     if result:
         print(f"Moved: X={result.get('x_steps', x)}, Y={result.get('y_steps', y)}")
 
 
 def cmd_home(args: list) -> None:
-    result = api_post("/motor/home", timeout=300)  # 5 minute timeout for homing
+    result = api_post("/scan/home", timeout=300)  # 5 minute timeout for homing
     if result:
         print("Motors homed")
 
 
 def cmd_position(args: list) -> None:
-    result = api_get("/motor/position")
+    result = api_get("/motor/status")
     if result:
-        x = result.get("x", 0)
-        y = result.get("y", 0)
-        print(f"Position: X={x}, Y={y}")
+        x = result.get("x", {})
+        y = result.get("y", {})
+        print(
+            f"Position: X={x.get('mode', 'unknown')} @ {x.get('position', 0)}, Y={y.get('mode', 'unknown')} @ {y.get('position', 0)}"
+        )
 
 
 def cmd_sethome(args: list) -> None:
-    result = api_post("/motor/set_home")
+    result = api_post("/scan/set_home")
     if result:
         print("Home position set to current location")
 
@@ -175,7 +177,7 @@ Available commands:
   status           Show scan status
   move <x> <y>     Move motors by steps (x/y can be negative)
   home             Return motors to home
-  position         Show motor position (X, Y steps)
+  position         Show motor status snapshot
   sethome          Set current position as home (calibrate)
   help             Show this help
   quit             Exit CLI

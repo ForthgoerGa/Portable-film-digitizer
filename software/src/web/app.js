@@ -3,12 +3,12 @@
 
 class ScannerUI {
     constructor() {
-        this.statusInterval = null;
+        this.scanStatusInterval = null;
+        this.motorStatusInterval = null;
         this.init();
     }
 
     init() {
-        // Get DOM elements
         this.startScanBtn = document.getElementById('startScanBtn');
         this.cancelScanBtn = document.getElementById('cancelScanBtn');
         this.filmFormat = document.getElementById('filmFormat');
@@ -17,44 +17,25 @@ class ScannerUI {
         this.scanPosition = document.getElementById('scanPosition');
         this.progressFill = document.getElementById('progressFill');
 
-        this.stepSize = document.getElementById('stepSize');
-        this.xReverseBtn = document.getElementById('xReverseBtn');
-        this.xForwardBtn = document.getElementById('xForwardBtn');
-        this.yReverseBtn = document.getElementById('yReverseBtn');
-        this.yForwardBtn = document.getElementById('yForwardBtn');
-        this.homeBtn = document.getElementById('homeBtn');
-        this.setHomeBtn = document.getElementById('setHomeBtn');
+        this.motorXState = document.getElementById('motorXState');
+        this.motorXPosition = document.getElementById('motorXPosition');
+        this.motorYState = document.getElementById('motorYState');
+        this.motorYPosition = document.getElementById('motorYPosition');
+
         this.refreshCapturesBtn = document.getElementById('refreshCapturesBtn');
         this.capturesTree = document.getElementById('captures-tree');
         this.capturesPath = document.getElementById('captures-path');
         this.captureImage = document.getElementById('capture-image');
 
-        // Bind event handlers
         this.bindEvents();
-
-        // Start status polling
-        this.startStatusPolling();
+        this.startScanStatusPolling();
+        this.startMotorStatusPolling();
     }
 
     bindEvents() {
-        // Scan control events
         this.startScanBtn.addEventListener('click', () => this.startScan());
         this.cancelScanBtn.addEventListener('click', () => this.cancelScan());
-
-        // Motor control events
-        this.xReverseBtn.addEventListener('click', () => this.moveMotor('x', -this.getStepSize()));
-        this.xForwardBtn.addEventListener('click', () => this.moveMotor('x', this.getStepSize()));
-        this.yReverseBtn.addEventListener('click', () => this.moveMotor('y', -this.getStepSize()));
-        this.yForwardBtn.addEventListener('click', () => this.moveMotor('y', this.getStepSize()));
-        this.homeBtn.addEventListener('click', () => this.homeMotors());
-        this.setHomeBtn.addEventListener('click', () => this.setHome());
-
-        // Captures viewer events
         this.refreshCapturesBtn.addEventListener('click', () => this.loadCapturesTree());
-    }
-
-    getStepSize() {
-        return parseInt(this.stepSize.value) || 1000;
     }
 
     async startScan() {
@@ -69,7 +50,6 @@ class ScannerUI {
             });
 
             if (response.ok) {
-                const data = await response.json();
                 this.setScanStatus('Scan started', 'working');
             } else {
                 const error = await response.json();
@@ -96,124 +76,76 @@ class ScannerUI {
         }
     }
 
-    async moveMotor(axis, steps) {
-        const direction = steps > 0 ? 'forward' : 'reverse';
-        const axisName = axis.toUpperCase();
-        this.setMotorStatus(`Moving ${axisName} ${direction}...`);
+    startScanStatusPolling() {
+        this.scanStatusInterval = setInterval(() => this.updateScanStatus(), 1000);
+        this.updateScanStatus();
+    }
 
-        try {
-            const response = await fetch('/motor/move', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({
-                    x: axis === 'x' ? steps : 0,
-                    y: axis === 'y' ? steps : 0
-                })
-            });
+    startMotorStatusPolling() {
+        this.motorStatusInterval = setInterval(() => this.updateMotorStatus(), 250);
+        this.updateMotorStatus();
+    }
 
-            if (response.ok) {
-                this.setMotorStatus(`${axisName} moved ${Math.abs(steps)} steps`);
-            } else {
-                const error = await response.json();
-                this.setMotorStatus(`Error: ${error.detail}`);
-            }
-        } catch (error) {
-            this.setMotorStatus('Network error');
+    stopScanStatusPolling() {
+        if (this.scanStatusInterval) {
+            clearInterval(this.scanStatusInterval);
+            this.scanStatusInterval = null;
         }
     }
 
-    async homeMotors() {
-        this.setMotorStatus('Returning to home...');
-
-        try {
-            const response = await fetch('/motor/home', { method: 'POST' });
-
-            if (response.ok) {
-                this.setMotorStatus('Returned to home position');
-            } else {
-                const error = await response.json();
-                this.setMotorStatus(`Error: ${error.detail}`);
-            }
-        } catch (error) {
-            this.setMotorStatus('Network error');
+    stopMotorStatusPolling() {
+        if (this.motorStatusInterval) {
+            clearInterval(this.motorStatusInterval);
+            this.motorStatusInterval = null;
         }
     }
 
-    async setHome() {
-        this.setMotorStatus('Setting home...');
-
-        try {
-            const response = await fetch('/motor/set_home', { method: 'POST' });
-
-            if (response.ok) {
-                this.setMotorStatus('Home position set');
-            } else {
-                const error = await response.json();
-                this.setMotorStatus(`Error: ${error.detail}`);
-            }
-        } catch (error) {
-            this.setMotorStatus('Network error');
-        }
-    }
-
-    startStatusPolling() {
-        this.statusInterval = setInterval(() => this.updateStatus(), 1000);
-    }
-
-    stopStatusPolling() {
-        if (this.statusInterval) {
-            clearInterval(this.statusInterval);
-            this.statusInterval = null;
-        }
-    }
-
-    async updateStatus() {
+    async updateScanStatus() {
         try {
             const response = await fetch('/scan/status');
-            if (response.ok) {
-                const status = await response.json();
-                this.updateUI(status);
+            if (!response.ok) {
+                return;
             }
 
-            const posResponse = await fetch('/motor/position');
-            if (posResponse.ok) {
-                const pos = await posResponse.json();
-                this.motorPosition.textContent = `X: ${pos.x}, Y: ${pos.y}`;
-            }
+            const status = await response.json();
+            this.scanStatus.textContent = status.state.replace('_', ' ').toUpperCase();
+            this.scanStatus.className = `value status-${status.state}`;
+            this.scanProgress.textContent = `${status.progress.toFixed(1)}%`;
+            this.progressFill.style.width = `${status.progress}%`;
+            this.scanPosition.textContent = `${status.current_row}, ${status.current_col}`;
+
+            const isWorking = status.state === 'scanning' || status.state === 'returning_home';
+            this.startScanBtn.disabled = isWorking;
+            this.cancelScanBtn.disabled = !isWorking;
         } catch (error) {
-            console.error('Status update failed:', error);
+            console.error('Scan status update failed:', error);
         }
     }
 
-    updateUI(status) {
-        // Update scan status
-        this.scanStatus.textContent = status.state.replace('_', ' ').toUpperCase();
-        this.scanStatus.className = `value status-${status.state}`;
+    async updateMotorStatus() {
+        try {
+            const response = await fetch('/motor/status');
+            if (!response.ok) {
+                return;
+            }
 
-        // Update progress
-        this.scanProgress.textContent = `${status.progress.toFixed(1)}%`;
-        this.progressFill.style.width = `${status.progress}%`;
+            const motor = await response.json();
+            this.updateMotorRow(this.motorXState, this.motorXPosition, motor.x);
+            this.updateMotorRow(this.motorYState, this.motorYPosition, motor.y);
+        } catch (error) {
+            console.error('Motor status update failed:', error);
+        }
+    }
 
-        // Update grid position (scan row/col)
-        this.scanPosition.textContent = `${status.current_row}, ${status.current_col}`;
-
-        // Update button states
-        const isWorking = status.state === 'scanning' || status.state === 'returning_home';
-        this.startScanBtn.disabled = isWorking;
-        this.cancelScanBtn.disabled = !isWorking;
+    updateMotorRow(stateNode, positionNode, motor) {
+        stateNode.textContent = motor.mode.toUpperCase();
+        stateNode.className = `motor-state status-${motor.mode}`;
+        positionNode.textContent = String(motor.position);
     }
 
     setScanStatus(message, state) {
         this.scanStatus.textContent = message.toUpperCase();
         this.scanStatus.className = `value status-${state}`;
-    }
-
-    setMotorStatus(message) {
-        this.motorStatus.textContent = message;
-        // Auto-clear status after 3 seconds
-        setTimeout(() => {
-            this.motorStatus.textContent = 'Ready';
-        }, 3000);
     }
 
     async loadCapturesTree() {
@@ -233,7 +165,7 @@ class ScannerUI {
     renderCapturesTree(tree) {
         this.capturesTree.innerHTML = '';
         if (tree) {
-            this.capturesTree.appendChild(this.buildTreeElement(tree, ""));
+            this.capturesTree.appendChild(this.buildTreeElement(tree, ''));
         }
     }
 
@@ -245,7 +177,7 @@ class ScannerUI {
 
         let fullPath;
         if (!parentPath && node.type === 'directory') {
-            fullPath = "";
+            fullPath = '';
         } else {
             fullPath = parentPath ? `${parentPath}/${node.name}` : node.name;
         }
@@ -286,8 +218,7 @@ class ScannerUI {
     }
 }
 
-// Initialize UI when DOM is loaded
 document.addEventListener('DOMContentLoaded', () => {
     const ui = new ScannerUI();
-    ui.loadCapturesTree(); // Load captures on startup
+    ui.loadCapturesTree();
 });
