@@ -1,0 +1,6 @@
+# Raw captures and output images — too large for git
+rpi_captures_white/
+output_*/
+*.npy
+*.dng
+*.pptx

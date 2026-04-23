@@ -10,55 +10,146 @@
     <main class="container">
         <h1>Film Digitizer Control</h1>
 
-        <section class="controls">
-            <div class="controls-row">
-                <label for="format">Film Format:</label>
-                <select id="format">
-                    <option value="35mm">35mm</option>
-                    <option value="120">120</option>
-                    <option value="instax">Instax</option>
-                </select>
-            </div>
-            <div class="controls-row">
-                <button id="start" class="primary">Start Scan</button>
-                <button id="cancel" class="secondary" disabled>Cancel</button>
-            </div>
-        </section>
+        <nav class="tabs">
+            <button class="tab-btn active" data-tab="camera">Camera &amp; Capture</button>
+            <button class="tab-btn" data-tab="scan">Scan Debug</button>
+        </nav>
 
-        <section class="controls">
-            <div class="controls-row">
-                <label for="serialPortSelect">Serial Port:</label>
-                <select id="serialPortSelect">
-                    <option value="">Select Port</option>
-                </select>
-            </div>
-        </section>
+        <!-- ── Camera & Capture tab ── -->
+        <div id="tab-camera" class="tab-panel active">
 
-        <section class="status">
-            <h2>Status</h2>
-            <div id="stateBadge" class="badge ready">Ready</div>
-            <div id="resultArea"></div>
-        </section>
+            <section class="camera-layout">
+                <div class="stream-pane">
+                    <img id="liveStream" src="/camera/stream" alt="Live camera feed" />
+                    <div id="streamOverlay" class="stream-overlay hidden">
+                        <span>Capturing…</span>
+                    </div>
+                </div>
+                <div class="camera-sidebar">
+                    <div class="controls">
+                        <h2>Camera Controls</h2>
+                        <div class="controls-row">
+                            <button id="captureBtn" class="primary capture-btn">&#9679; Capture</button>
+                        </div>
+                        <div id="cameraStatus" class="camera-status">Ready</div>
+                        <hr class="divider" />
+                        <h2>AI Processing</h2>
+                        <div class="controls-row">
+                            <button id="processBtn" class="ai-btn" disabled>&#10024; Process with AI</button>
+                        </div>
+                        <div id="processStatus" class="camera-status">Select a capture first</div>
+                        <hr class="divider" />
+                        <div class="selected-capture-info" id="selectedInfo" style="display:none">
+                            <span class="label">Selected:</span>
+                            <span id="selectedFilename" class="filename-tag"></span>
+                        </div>
+                    </div>
+                </div>
+            </section>
 
-        <section class="results">
-            <h2>Fractions Grid</h2>
-            <div id="fractionsMeta" class="meta-line"></div>
-            <div id="fractionsGrid" class="fractions-grid"></div>
-        </section>
+            <!-- Live processing progress panel -->
+            <section id="processingPanel" class="results hidden">
+                <h2>AI Pipeline — Running</h2>
+                <div id="pipelineHeader" class="pipeline-header"></div>
+                <div id="iterProgressRow" class="iter-progress-row">
+                    <span id="iterLabel" class="iter-label">Iteration 0 / ?</span>
+                    <div class="progress-track">
+                        <div id="iterBar" class="progress-bar iter-bar" style="width:0%"></div>
+                    </div>
+                </div>
+                <div id="scoreProgressRow" class="iter-progress-row">
+                    <span id="scoreLabel" class="iter-label">Score —</span>
+                    <div class="progress-track">
+                        <div id="scoreBar" class="progress-bar score-bar" style="width:0%"></div>
+                    </div>
+                </div>
+                <div id="liveFeedback" class="ai-feedback hidden"></div>
+                <div id="iterationLog" class="iteration-log"></div>
+                <details id="liveParamsDetails" class="param-details hidden">
+                    <summary>Current Parameters</summary>
+                    <div id="liveParams" class="param-grid"></div>
+                </details>
+            </section>
 
-        <section class="results">
-            <h2>Integrated vs Output</h2>
-            <div class="compare-grid">
-                <article class="image-card">
-                    <h3>Integrated Raw Image</h3>
-                    <img id="rawImage" alt="Integrated raw image preview" />
-                </article>
-                <article class="image-card">
-                    <h3>Final Output (White-Balanced)</h3>
-                    <img id="finalImage" alt="Final white-balanced output preview" />
-                </article>
-            </div>
-        </section>
+            <!-- AI result -->
+            <section id="aiResultSection" class="results hidden">
+                <h2>AI Processing Result</h2>
+                <div id="aiMeta" class="ai-meta-grid"></div>
+                <div class="compare-grid">
+                    <article class="image-card">
+                        <h3>Original Capture</h3>
+                        <img id="aiBeforeImg" alt="Original capture" />
+                    </article>
+                    <article class="image-card">
+                        <h3>Processed Output</h3>
+                        <img id="aiAfterImg" alt="Processed output" />
+                    </article>
+                </div>
+            </section>
+
+            <!-- Gallery -->
+            <section class="results">
+                <h2>Captures <span id="captureCount" class="count-badge"></span></h2>
+                <p class="meta-line">Click a thumbnail to select it for AI processing.</p>
+                <div id="captureGallery" class="gallery-grid"></div>
+            </section>
+
+        </div>
+
+        <!-- ── Scan Debug tab ── -->
+        <div id="tab-scan" class="tab-panel">
+
+            <section class="controls">
+                <div class="controls-row">
+                    <label for="format">Film Format:</label>
+                    <select id="format">
+                        <option value="35mm">35mm</option>
+                        <option value="120">120</option>
+                        <option value="instax">Instax</option>
+                    </select>
+                </div>
+                <div class="controls-row">
+                    <button id="start" class="primary">Start Scan</button>
+                    <button id="cancel" class="secondary" disabled>Cancel</button>
+                </div>
+            </section>
+
+            <section class="controls">
+                <div class="controls-row">
+                    <label for="serialPortSelect">Serial Port:</label>
+                    <select id="serialPortSelect">
+                        <option value="">Select Port</option>
+                    </select>
+                </div>
+            </section>
+
+            <section class="status">
+                <h2>Status</h2>
+                <div id="stateBadge" class="badge ready">Ready</div>
+                <div id="resultArea"></div>
+            </section>
+
+            <section class="results">
+                <h2>Fractions Grid</h2>
+                <div id="fractionsMeta" class="meta-line"></div>
+                <div id="fractionsGrid" class="fractions-grid"></div>
+            </section>
+
+            <section class="results">
+                <h2>Integrated vs Output</h2>
+                <div class="compare-grid">
+                    <article class="image-card">
+                        <h3>Integrated Raw Image</h3>
+                        <img id="rawImage" alt="Integrated raw image preview" />
+                    </article>
+                    <article class="image-card">
+                        <h3>Final Output (White-Balanced)</h3>
+                        <img id="finalImage" alt="Final white-balanced output preview" />
+                    </article>
+                </div>
+            </section>
+
+        </div>
     </main>
     <script src="app.js"></script>
 </body>

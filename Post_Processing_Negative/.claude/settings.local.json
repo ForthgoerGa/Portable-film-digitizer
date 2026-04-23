@@ -1,0 +1,26 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(python run_physical_correction.py --input-dir rpi_captures_white --output-dir output_full_run_s1_s4 --max-iterations 1 --skip-npy --skip-linear16)",
+      "Bash(ls /c/ece_445/Post_Processing_Negative/output_full_run_s1_s4/*.png)",
+      "Bash(npm install *)",
+      "Bash(node film_digitizer_demo.js)",
+      "Bash(node -e \"console.log\\(require.resolve.paths\\('pptxgenjs'\\)\\)\")",
+      "Bash(npm root *)",
+      "Bash(npm init *)",
+      "Bash(python scripts/office/soffice.py --headless --convert-to pdf film_digitizer_demo.pptx)",
+      "Bash(python \"C:\\\\Users\\\\17798\\\\AppData\\\\Roaming\\\\Claude\\\\local-agent-mode-sessions\\\\skills-plugin\\\\8ff354d6-7c9c-42d4-aadb-76c2d61e5562\\\\beec48ee-b857-4be8-b72d-8e965a937478\\\\skills\\\\pptx\\\\scripts\\\\office\\\\soffice.py\" --headless --convert-to pdf \"C:\\\\ece_445\\\\Post_Processing_Negative\\\\film_digitizer_demo.pptx\")",
+      "Bash(where soffice *)",
+      "Bash(where \"soffice.exe\")",
+      "Read(//c/Program Files/LibreOffice/program/**)",
+      "Bash(python -m markitdown film_digitizer_demo.pptx)",
+      "Bash(pip install *)",
+      "Bash(python -m markitdown \"C:\\\\ece_445\\\\Post_Processing_Negative\\\\film_digitizer_demo.pptx\")",
+      "Bash(python -c \"from pptx import Presentation; p=Presentation\\('C:/ece_445/Post_Processing_Negative/film_digitizer_demo.pptx'\\); print\\(f'{len\\(p.slides\\)} slides'\\); [print\\(f'Slide {i+1}: {[s.text for s in slide.shapes if hasattr\\(s,\\\\\"text\\\\\"\\) and s.text.strip\\(\\)][:3]}'\\) for i, slide in enumerate\\(p.slides\\)]\")",
+      "Bash(python \"C:\\\\Users\\\\17798\\\\AppData\\\\Roaming\\\\Claude\\\\local-agent-mode-sessions\\\\skills-plugin\\\\8ff354d6-7c9c-42d4-aadb-76c2d61e5562\\\\beec48ee-b857-4be8-b72d-8e965a937478\\\\skills\\\\pptx\\\\scripts\\\\thumbnail.py\" \"C:\\\\ece_445\\\\Post_Processing_Negative\\\\film_digitizer_demo.pptx\")",
+      "Bash(powershell -Command ' *)",
+      "Bash(python -c \"from pptx import Presentation; p=Presentation\\('C:/ece_445/Post_Processing_Negative/film_digitizer_demo.pptx'\\); print\\('File valid,', len\\(p.slides\\), 'slides'\\)\")",
+      "Bash(python -c ' *)"
+    ]
+  }
+}

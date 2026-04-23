@@ -232,15 +232,30 @@ def characterize_film(
     calibration_mode = "border_plus_scene_estimate"
 
     if leader_rgb is not None:
-        calibration_mode = "border_plus_leader"
         dmin_density_rgb, dmax_density_rgb, leader_conf = _estimate_from_leader(leader_rgb, base_rgb)
-        upper_density_rgb = dmax_density_rgb
-        upper_ref_confidence = leader_conf
-        notes.append("Relative density references derived from leader frame.")
         log.info(
             "Leader calibration densities: dmin=(%.4f %.4f %.4f) dmax=(%.4f %.4f %.4f)",
             *dmin_density_rgb, *dmax_density_rgb,
         )
+        if leader_conf > 0.0:
+            calibration_mode = "border_plus_leader"
+            upper_density_rgb = dmax_density_rgb
+            upper_ref_confidence = leader_conf
+            notes.append("Relative density references derived from leader frame.")
+        else:
+            # Leader didn't contain a usable dark-density region (e.g. it is a
+            # base-only frame, not a true calibration leader).  Fall back to
+            # scene-based upper density and discard the bad dmax.
+            dmin_density_rgb = None
+            dmax_density_rgb = None
+            calibration_mode = "border_plus_scene_estimate"
+            notes.append(
+                "Leader frame did not yield a plausible D-max; "
+                "falling back to scene-based upper density estimation."
+            )
+            upper_density_rgb, upper_ref_confidence = estimate_scene_upper_density(
+                frame_rgb, base_rgb
+            )
     else:
         # Fallback: estimate upper density conservatively from scene content.
         upper_density_rgb, upper_ref_confidence = estimate_scene_upper_density(
@@ -391,6 +406,24 @@ def _estimate_from_leader(
 
     dmin_density_rgb = np.clip(dmin_density_rgb, 0.0, None)
     dmax_density_rgb = np.clip(dmax_density_rgb, 1e-4, None)
+
+    # Sanity check: if dmax is suspiciously high (no true dark region in the
+    # leader — e.g. the frame is actually a base-only reference, not a real
+    # leader with heavily exposed dark areas), the estimate is unreliable.
+    # Real film D-max is typically 1.0–3.0; values > 4.0 almost certainly
+    # indicate clipped noise rather than a genuine density endpoint.
+    _DMAX_PLAUSIBLE_LIMIT = 4.0
+    if float(dmax_density_rgb.max()) > _DMAX_PLAUSIBLE_LIMIT:
+        log.warning(
+            "_estimate_from_leader: dmax=(%.3f %.3f %.3f) exceeds plausible limit (%.1f). "
+            "The supplied leader may not contain a heavily exposed dark region. "
+            "Returning low-confidence result so the caller can fall back.",
+            *dmax_density_rgb, _DMAX_PLAUSIBLE_LIMIT,
+        )
+        # Return near-zero confidence so caller knows not to trust this.
+        separation = 0.0
+        confidence = 0.0
+        return dmin_density_rgb, dmax_density_rgb, confidence
 
     separation = float((dmax_density_rgb - dmin_density_rgb).mean())
     confidence = float(np.clip(separation / 2.0, 0.0, 1.0))

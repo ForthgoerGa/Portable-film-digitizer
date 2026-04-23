@@ -74,6 +74,39 @@ git add .
 git commit -m "Initial project scaffold"
 ```
 
+## Running the Software
+
+### Web Inspection Server (PC)
+Runs the FastAPI server with the web UI for scan control and image review:
+```bash
+cd software && python server.py
+# FastAPI at http://localhost:8000, web UI at http://localhost:8000/web/
+```
+
+### Raspberry Pi Camera Server
+Streams a live MJPEG preview, triggers captures, and forwards to the PC pipeline:
+```bash
+# On the Raspberry Pi:
+python3 software/rpi_camera_server.py [--port 8080] [--button-pin 17] [--pc-host <PC_IP>]
+# Web UI at http://<pi-ip>:8080/
+```
+
+### Agentic Post-Processing Pipeline
+Runs the Gemini-powered agent loop (classify → process → evaluate → refine):
+```bash
+cd Agentic_Post_Processing
+python orchestrator.py --input-dir data --output-dir output --max-iter 2
+```
+Requires a `.env` file with `GEMINI_API_KEY` (see `.env.example`). Falls back to heuristics automatically if the key is absent.
+
+### Raw Negative Pipeline (direct)
+```bash
+python software/processing/negative_pipeline.py \
+  --tiles-dir "Image_integration&Post_Processing/Negative_example/norway_split_40_overlap" \
+  --output-dir "Image_integration&Post_Processing/output_demo" \
+  --wb-clip-percent 0.5
+```
+
 ## GitHub Setup
 See `docs/github-setup.md` for:
 - creating the remote repo,
