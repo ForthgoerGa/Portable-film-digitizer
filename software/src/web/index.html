@@ -1,0 +1,99 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Film Digitizer Scanner</title>
+    <link rel="stylesheet" href="style.css">
+</head>
+<body>
+    <div class="container">
+        <header>
+            <h1>Film Digitizer Scanner</h1>
+        </header>
+
+        <main>
+            <!-- Scan Control Section -->
+            <section class="scan-control">
+                <h2>Scan Control</h2>
+
+                <div class="control-group">
+                    <label for="filmFormat">Film Format:</label>
+                    <select id="filmFormat">
+                        <option value="35mm">35mm</option>
+                        <option value="120">120 (Medium Format)</option>
+                        <option value="4x5">4x5 (Large Format)</option>
+                    </select>
+                </div>
+
+                <div class="control-group">
+                    <button id="startScanBtn" class="btn btn-primary">Start Scan</button>
+                    <button id="cancelScanBtn" class="btn btn-danger">Cancel Scan</button>
+                </div>
+
+                <div class="status-display">
+                    <div class="status-item">
+                        <span class="label">Status:</span>
+                        <span id="scanStatus" class="value status-idle">Ready</span>
+                    </div>
+                    <div class="status-item">
+                        <span class="label">Progress:</span>
+                        <span id="scanProgress" class="value">0%</span>
+                    </div>
+                    <div class="status-item">
+                        <span class="label">Grid Position:</span>
+                        <span id="scanPosition" class="value">0, 0</span>
+                    </div>
+                    <div class="status-item">
+                        <span class="label">Motor Position:</span>
+                        <span id="motorPosition" class="value">X: 0, Y: 0</span>
+                    </div>
+                </div>
+
+                <div class="progress-bar">
+                    <div id="progressFill" class="progress-fill"></div>
+                </div>
+            </section>
+
+            <!-- Motor Control Section -->
+            <section class="motor-control">
+                <h2>Manual Motor Control</h2>
+
+                <div class="control-group">
+                    <label for="stepSize">Step Size:</label>
+                    <input type="number" id="stepSize" value="1000" min="1" max="10000">
+                </div>
+
+                <div class="axis-controls">
+                    <div class="axis-group">
+                        <h3>X Axis (Left/Right)</h3>
+                        <div class="buttons">
+                            <button id="xReverseBtn" class="btn">◀ Left</button>
+                            <button id="xForwardBtn" class="btn">Right ▶</button>
+                        </div>
+                    </div>
+
+                    <div class="axis-group">
+                        <h3>Y Axis (Up/Down)</h3>
+                        <div class="buttons">
+                            <button id="yReverseBtn" class="btn">▲ Up</button>
+                            <button id="yForwardBtn" class="btn">Down ▼</button>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="control-group">
+                    <button id="homeBtn" class="btn btn-secondary">Return to Home</button>
+                    <button id="setHomeBtn" class="btn btn-secondary">Set Home</button>
+                </div>
+
+                <div class="motor-status">
+                    <span id="motorStatus" class="status">Ready</span>
+                </div>
+            </section>
+        </main>
+    </div>
+
+    <script src="app.js"></script>
+</body>
+</html>
