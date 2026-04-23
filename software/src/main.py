@@ -37,7 +37,9 @@ def safe_resolve_path(path: str) -> Path:
     except ValueError:
         raise HTTPException(status_code=400, detail="Path outside captures directory")
 
-    return full_path
+
+# Create coordinator instance
+coordinator = ScannerCoordinator()
 
 
 # Serve web UI if it exists
