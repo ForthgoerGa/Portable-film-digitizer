@@ -147,10 +147,15 @@ class Scanner:
         self.motor_y = StepperMotor(STEP_Y, DIR_Y)
 
         # Initialize camera
-        self.camera = Picamera2()
-        config = self.camera.create_still_configuration()
-        self.camera.configure(config)
-        self.camera.start()
+        try:
+            self.camera = Picamera2()
+            config = self.camera.create_still_configuration()
+            self.camera.configure(config)
+            self.camera.start()
+            self.camera_available = True
+        except IndexError:
+            self.camera = None
+            self.camera_available = False
 
     def set_capture_callback(self, callback: Callable[[int, int], None]) -> None:
         """Set the callback function for image capture."""
@@ -200,11 +205,15 @@ class Scanner:
 
     def capture(self, row: int, col: int) -> None:
         """Capture an image at the specified grid position."""
+        if not self.camera_available:
+            print("Camera not available, skipping capture")
+            return
         filename = CAPTURES_DIR / f"row_{row}_col_{col}.jpg"
         self.camera.capture_file(str(filename))
         print(f"Captured {filename}")
 
     def cleanup(self) -> None:
         """Clean up GPIO resources."""
-        self.camera.close()
+        if self.camera_available:
+            self.camera.close()
         GPIO.cleanup()
