@@ -117,21 +117,17 @@ def move_motors(request: dict):
     y_steps = request.get("y", 0)
 
     try:
-        if x_steps != 0:
-            coordinator.scanner.move_x(x_steps)
-        if y_steps != 0:
-            coordinator.scanner.move_y(y_steps)
-
+        coordinator.move_motors(x_steps, y_steps)
         return {"status": "moved", "x_steps": x_steps, "y_steps": y_steps}
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Motor movement failed: {str(e)}")
+    except RuntimeError as e:
+        raise HTTPException(status_code=409, detail=str(e))
 
 
 @app.post("/motor/home")
 def home_motors():
     """Return motors to home/origin position."""
     try:
-        coordinator.scanner.return_to_origin()
+        coordinator.home_motors()
         return {"status": "homed"}
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Home operation failed: {str(e)}")
@@ -140,8 +136,11 @@ def home_motors():
 @app.post("/motor/set_home")
 def set_home():
     """Set current motor position as home (origin)."""
-    coordinator.scanner.set_home()
-    return {"status": "home_set"}
+    try:
+        coordinator.set_home_motors()
+        return {"status": "home_set"}
+    except RuntimeError as e:
+        raise HTTPException(status_code=409, detail=str(e))
 
 
 @app.get("/motor/position")
