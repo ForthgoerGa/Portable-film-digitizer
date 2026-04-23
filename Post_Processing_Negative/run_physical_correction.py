@@ -8,6 +8,8 @@ from typing import Any
 
 import numpy as np
 
+from negative_physical import color_refinement as stage3_color_refinement
+from negative_physical import perceptual_tone as stage2_perceptual_tone
 from negative_physical.camera_color import (
     STAGE10_MATRIX_PRESETS,
     apply_stage10_soft_reference_mapping,
@@ -397,6 +399,14 @@ def main() -> None:
         action="store_true",
         help="Skip large 16-bit PNG intermediates and write visual-check PNGs only.",
     )
+    parser.add_argument(
+        "--verify-stage23-contract-only",
+        action="store_true",
+        help=(
+            "Run a synthetic Stage 2/3 color-space contract smoke test and exit. "
+            "This does not process RAW captures."
+        ),
+    )
     args = parser.parse_args()
     if args.flat_strength < 0.0:
         parser.error("--flat-strength must be >= 0")
@@ -498,6 +508,12 @@ def main() -> None:
         parser.error("--stage4-final-softness-sigma must be > 0")
     if args.stage4_final_sharpen_amount < 0.0:
         parser.error("--stage4-final-sharpen-amount must be >= 0")
+    if args.verify_stage23_contract_only:
+        verification = _run_stage23_contract_verification()
+        print(json.dumps(verification, indent=2))
+        if not verification["all_passed"]:
+            raise SystemExit(1)
+        return
 
     input_dir = args.input_dir.resolve()
     output_dir = args.output_dir.resolve()
@@ -699,7 +715,7 @@ def main() -> None:
 
     print(f"Processing base reference frame: {base_frame_path.name}")
     base_frame = load_raw_bayer(base_frame_path)
-    base_frame_result = _process_frame_with_evaluator(
+    base_frame_result, base_rgb_linear = _process_frame_with_evaluator(
         base_frame,
         flat_model,
         evaluator,
@@ -714,7 +730,6 @@ def main() -> None:
         save_npy=not args.skip_npy,
         save_linear16=not args.skip_linear16,
     )
-    base_rgb_linear = _rgb_for_selected_flat_result(base_frame, flat_model, base_frame_result)
     base_reference = estimate_base_reference(
         base_rgb_linear,
         reference_rois,
@@ -731,6 +746,7 @@ def main() -> None:
         flat_model=flat_model,
         frame_result=base_frame_result,
         base_reference=base_reference,
+        rgb_linear=base_rgb_linear,
         output_dir=output_dir,
         preview_gamma=args.preview_gamma,
         density_percentile=args.density_percentile,
@@ -793,7 +809,7 @@ def main() -> None:
     for frame_path in frame_paths:
         print(f"Processing frame: {frame_path.name}")
         frame = load_raw_bayer(frame_path)
-        frame_result = _process_frame_with_evaluator(
+        frame_result, frame_rgb_linear = _process_frame_with_evaluator(
             frame,
             flat_model,
             evaluator,
@@ -813,6 +829,7 @@ def main() -> None:
             flat_model=flat_model,
             frame_result=frame_result,
             base_reference=base_reference,
+            rgb_linear=frame_rgb_linear,
             output_dir=output_dir,
             preview_gamma=args.preview_gamma,
             density_percentile=args.density_percentile,
@@ -890,7 +907,8 @@ def _process_frame_with_evaluator(
     strength_search_enabled: bool,
     save_npy: bool,
     save_linear16: bool,
-) -> dict[str, Any]:
+) -> tuple[dict[str, Any], np.ndarray]:
+    """Returns (diagnostics_dict, rgb_linear) to avoid recomputing flat+demosaic downstream."""
     stem = Path(frame.path).stem
     strength = _clamp_strength(initial_strength, min_strength, max_strength)
     if not strength_search_enabled:
@@ -918,7 +936,7 @@ def _process_frame_with_evaluator(
         final_diagnostics["passed"] = None
         final_diagnostics["attempts"] = []
         print(f"  flat strength={strength:.3f} single-pass")
-        return final_diagnostics
+        return final_diagnostics, rgb_linear
 
     if evaluator is None:
         raise RuntimeError("Strength search requires an evaluator instance.")
@@ -1008,7 +1026,7 @@ def _process_frame_with_evaluator(
     final_diagnostics["selected_score"] = float(best_attempt["evaluation"]["score"])
     final_diagnostics["passed"] = bool(best_attempt["evaluation"]["passed"])
     final_diagnostics["attempts"] = attempts
-    return final_diagnostics
+    return final_diagnostics, rgb_linear
 
 
 def _save_flat_corrected_outputs(
@@ -1050,6 +1068,7 @@ def _save_negative_stage_outputs(
     flat_model,
     frame_result: dict[str, Any],
     base_reference,
+    rgb_linear: np.ndarray,
     output_dir: Path,
     preview_gamma: float,
     density_percentile: float,
@@ -1108,9 +1127,7 @@ def _save_negative_stage_outputs(
     """Save [5]-[10], Stage 2, Stage 3, and Stage 4 images for visual inspection."""
 
     stem = Path(frame.path).stem
-    strength = float(frame_result["flat_field_strength"])
-    corrected = apply_flat_field(frame, flat_model, strength=strength)
-    rgb_linear = demosaic_to_rgb(corrected, frame.cfa_pattern)
+    # rgb_linear is passed in — already computed by _process_frame_with_evaluator.
     negative = process_negative_stages(
         rgb_linear,
         base_reference,
@@ -1423,6 +1440,219 @@ def _save_display_debug_preview(img: np.ndarray | None, path: Path) -> None:
     if img is None:
         return
     save_display_rgb_png(np.asarray(img, dtype=np.float32), path)
+
+
+def _run_stage23_contract_verification() -> dict[str, Any]:
+    """Synthetic smoke checks for Stage 2/3 Lab path contracts.
+
+    This validates the current OpenCV Lab path's single encode/decode contract.
+    It is not a golden-image regression proof against the previous explicit
+    RGB<->Lab implementation.
+
+    Checks:
+    1) Neutral inputs remain near neutral in Lab and after round-trip.
+    2) Round-trip in encoded Lab path is numerically stable.
+    3) Stage previews remain separate from linear outputs.
+    """
+
+    gamma = 2.2
+    eps = 1e-6
+    percentile = 99.5
+
+    neutral_lin = np.linspace(0.02, 0.95, 64, dtype=np.float32).reshape(8, 8, 1)
+    neutral_lin = np.repeat(neutral_lin, 3, axis=2)
+
+    y = np.linspace(0.0, 1.0, 32, dtype=np.float32)
+    x = np.linspace(0.0, 1.0, 32, dtype=np.float32)
+    x_grid, y_grid = np.meshgrid(x, y)
+    hdr_linear = np.stack(
+        [
+            0.05 + 1.60 * x_grid,
+            0.03 + 1.20 * y_grid,
+            0.02 + 1.40 * (0.65 * x_grid + 0.35 * y_grid),
+        ],
+        axis=2,
+    ).astype(np.float32)
+
+    # Stage 2 conversion contract: _prepare_lab_input(srgb_encoded) returns
+    # encoded RGB that goes directly into RGB2Lab; Lab2RGB returns encoded RGB;
+    # decode to linear exactly once.
+    s2_prepared, s2_prepare_diag = stage2_perceptual_tone._prepare_lab_input(
+        neutral_lin,
+        mode="srgb_encoded",
+        percentile=percentile,
+        gamma=gamma,
+        eps=eps,
+    )
+    s2_lab = stage2_perceptual_tone._rgb_to_lab_for_mode(
+        s2_prepared,
+        mode="srgb_encoded",
+        gamma=gamma,
+    )
+    s2_encoded_rt = stage2_perceptual_tone._lab_to_rgb_for_mode(
+        s2_lab,
+        mode="srgb_encoded",
+        gamma=gamma,
+    )
+    s2_linear_rt = np.power(np.clip(s2_encoded_rt, 0.0, 1.0), gamma).astype(np.float32)
+    s2_expected_linear = np.power(np.clip(s2_prepared, 0.0, 1.0), gamma).astype(np.float32)
+    s2_expected_from_original = np.clip(
+        neutral_lin / (float(s2_prepare_diag["scale"]) + eps),
+        0.0,
+        1.0,
+    ).astype(np.float32)
+
+    s2_ab_abs_max = float(np.max(np.abs(s2_lab[..., 1:3])))
+    s2_roundtrip_max_err = float(np.max(np.abs(s2_linear_rt - s2_expected_linear)))
+    s2_roundtrip_mean_err = float(np.mean(np.abs(s2_linear_rt - s2_expected_linear)))
+    s2_original_linear_max_err = float(np.max(np.abs(s2_linear_rt - s2_expected_from_original)))
+    s2_original_linear_mean_err = float(np.mean(np.abs(s2_linear_rt - s2_expected_from_original)))
+
+    # Stage 3 conversion contract mirrors Stage 2 but always uses encoded Lab input.
+    s3_prepared, s3_prepare_diag = stage3_color_refinement._prepare_lab_input(
+        neutral_lin,
+        percentile=percentile,
+        gamma=gamma,
+        eps=eps,
+    )
+    s3_lab = stage3_color_refinement._srgb_like_to_lab(s3_prepared, gamma=gamma)
+    s3_encoded_rt = stage3_color_refinement._lab_to_srgb_like(s3_lab, gamma=gamma)
+    s3_linear_rt = np.power(np.clip(s3_encoded_rt, 0.0, 1.0), gamma).astype(np.float32)
+    s3_expected_linear = np.power(np.clip(s3_prepared, 0.0, 1.0), gamma).astype(np.float32)
+    s3_expected_from_original = np.clip(
+        neutral_lin / (float(s3_prepare_diag["scale"]) + eps),
+        0.0,
+        1.0,
+    ).astype(np.float32)
+
+    s3_ab_abs_max = float(np.max(np.abs(s3_lab[..., 1:3])))
+    s3_roundtrip_max_err = float(np.max(np.abs(s3_linear_rt - s3_expected_linear)))
+    s3_roundtrip_mean_err = float(np.mean(np.abs(s3_linear_rt - s3_expected_linear)))
+    s3_original_linear_max_err = float(np.max(np.abs(s3_linear_rt - s3_expected_from_original)))
+    s3_original_linear_mean_err = float(np.mean(np.abs(s3_linear_rt - s3_expected_from_original)))
+
+    # Full Stage 2/3 run with edits disabled validates preview-vs-linear separation.
+    s2_result = apply_stage2_perceptual_tone_base(
+        hdr_linear,
+        gray_norm_enabled=False,
+        perceptual_space_enabled=True,
+        lab_input_mode="srgb_encoded",
+        lab_input_percentile=percentile,
+        lab_input_gamma=gamma,
+        lab_input_eps=eps,
+        zoned_tone_enabled=False,
+        highlight_rolloff_enabled=False,
+        preview_enabled=True,
+        preview_percentile=99.5,
+        preview_gamma=2.2,
+        preview_eps=1e-6,
+    )
+    s3_result = apply_stage3_pseudo_lut_color_refinement(
+        s2_result.stage2_linear_output,
+        include_debug=False,
+        lab_input_percentile=percentile,
+        lab_input_gamma=gamma,
+        lab_input_eps=eps,
+        luma_chroma_enabled=False,
+        hue_adjust_enabled=False,
+        neutral_protect_enabled=False,
+        preview_enabled=True,
+        preview_percentile=99.5,
+        preview_gamma=2.2,
+        preview_eps=1e-6,
+    )
+
+    s2_preview_sep = float(
+        np.mean(
+            np.abs(
+                s2_result.stage2_preview_output
+                - np.clip(s2_result.stage2_linear_output, 0.0, 1.0)
+            )
+        )
+    )
+    s3_preview_sep = float(
+        np.mean(
+            np.abs(
+                s3_result.stage3_preview_output
+                - np.clip(s3_result.stage3_linear_output, 0.0, 1.0)
+            )
+        )
+    )
+
+    checks = {
+        "stage2_neutral_lab": {
+            "passed": s2_ab_abs_max <= 1.5,
+            "metric": s2_ab_abs_max,
+            "threshold": 1.5,
+            "description": "Neutral gray stays near Lab neutral for Stage 2 path.",
+        },
+        "stage2_roundtrip_stability": {
+            "passed": s2_roundtrip_max_err <= 5e-3,
+            "max_abs_error": s2_roundtrip_max_err,
+            "mean_abs_error": s2_roundtrip_mean_err,
+            "threshold": 5e-3,
+            "description": "Stage 2 encoded Lab round-trip remains stable.",
+        },
+        "stage2_original_linear_contract": {
+            "passed": s2_original_linear_max_err <= 5e-3,
+            "max_abs_error": s2_original_linear_max_err,
+            "mean_abs_error": s2_original_linear_mean_err,
+            "threshold": 5e-3,
+            "description": (
+                "Stage 2 round-trip returns to the normalized original linear input "
+                "after exactly one decode."
+            ),
+        },
+        "stage3_neutral_lab": {
+            "passed": s3_ab_abs_max <= 1.5,
+            "metric": s3_ab_abs_max,
+            "threshold": 1.5,
+            "description": "Neutral gray stays near Lab neutral for Stage 3 path.",
+        },
+        "stage3_roundtrip_stability": {
+            "passed": s3_roundtrip_max_err <= 5e-3,
+            "max_abs_error": s3_roundtrip_max_err,
+            "mean_abs_error": s3_roundtrip_mean_err,
+            "threshold": 5e-3,
+            "description": "Stage 3 encoded Lab round-trip remains stable.",
+        },
+        "stage3_original_linear_contract": {
+            "passed": s3_original_linear_max_err <= 5e-3,
+            "max_abs_error": s3_original_linear_max_err,
+            "mean_abs_error": s3_original_linear_mean_err,
+            "threshold": 5e-3,
+            "description": (
+                "Stage 3 round-trip returns to the normalized original linear input "
+                "after exactly one decode."
+            ),
+        },
+        "preview_is_separate_from_linear": {
+            "passed": (s2_preview_sep > 1e-4) and (s3_preview_sep > 1e-4),
+            "stage2_mean_abs_diff": s2_preview_sep,
+            "stage3_mean_abs_diff": s3_preview_sep,
+            "threshold": 1e-4,
+            "description": "Stage 2/3 preview buffers are not the linear pipeline outputs.",
+        },
+    }
+    all_passed = all(bool(item["passed"]) for item in checks.values())
+    return {
+        "stage": "stage2_stage3_contract_smoke_test",
+        "all_passed": all_passed,
+        "checks": checks,
+        "limitations": (
+            "This validates the current encoded OpenCV Lab contract only. "
+            "It does not prove golden-image equivalence to the previous explicit "
+            "RGB<->Lab implementation."
+        ),
+        "contract": {
+            "stage2_prepare": "srgb_encoded returns encoded RGB for Lab conversion",
+            "stage2_lab2rgb": "srgb_encoded output treated as encoded RGB",
+            "stage2_decode": "exactly one encoded->linear decode after Lab2RGB",
+            "stage3_prepare": "returns encoded RGB for Lab conversion",
+            "stage3_lab2rgb": "output treated as encoded RGB",
+            "stage3_decode": "exactly one encoded->linear decode after Lab2RGB",
+        },
+    }
 
 
 def _resolve_backlight_path(input_dir: Path, requested: Path | None) -> Path:

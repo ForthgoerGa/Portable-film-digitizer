@@ -5,26 +5,10 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any
 
+import cv2
 import numpy as np
 
 _EPS = 1e-6
-_D65 = np.array([0.95047, 1.0, 1.08883], dtype=np.float32)
-_RGB_TO_XYZ = np.array(
-    [
-        [0.4124564, 0.3575761, 0.1804375],
-        [0.2126729, 0.7151522, 0.0721750],
-        [0.0193339, 0.1191920, 0.9503041],
-    ],
-    dtype=np.float32,
-)
-_XYZ_TO_RGB = np.array(
-    [
-        [3.2404542, -1.5371385, -0.4985314],
-        [-0.9692660, 1.8760108, 0.0415560],
-        [0.0556434, -0.2040259, 1.0572252],
-    ],
-    dtype=np.float32,
-)
 
 STAGE3_DEFAULT_PARAMS: dict[str, Any] = {
     "lab_input_percentile": 99.5,
@@ -256,6 +240,10 @@ def _stage3_pseudo_lut_color_refinement_impl(
 
     C_after = np.sqrt(a3 * a3 + b3 * b3).astype(np.float32)
     lab_out = np.stack([L * 100.0, a3, b3], axis=2).astype(np.float32)
+    # Color-space contract for Stage 3:
+    # - _prepare_lab_input returns encoded RGB for Lab processing.
+    # - _lab_to_srgb_like returns encoded RGB after Lab edits.
+    # - Decode happens exactly once here to restore pipeline-linear output.
     rgb_srgb_like = _lab_to_srgb_like(lab_out, gamma=float(params["lab_input_gamma"]))
     stage3_linear_output = np.power(
         np.clip(rgb_srgb_like, 0.0, 1.0),
@@ -334,6 +322,9 @@ def _prepare_lab_input(
     eps: float,
 ) -> tuple[np.ndarray, dict[str, Any]]:
     x = np.maximum(img.astype(np.float32), 0.0)
+    # Contract: return preview-style encoded RGB in [0, 1] for Lab conversion.
+    # Stage 3 keeps this encoded representation inside the Lab path and decodes
+    # only once after Lab2RGB.
     scale = _safe_percentile(x, percentile)
     x = x / (scale + max(float(eps), 1e-12))
     x = np.clip(x, 0.0, 1.0)
@@ -468,45 +459,15 @@ def _neutral_protection(
 
 
 def _srgb_like_to_lab(rgb: np.ndarray, gamma: float) -> np.ndarray:
-    linear = np.power(np.clip(rgb, 0.0, 1.0), max(float(gamma), 1e-6))
-    return _linear_rgb_to_lab(linear)
+    del gamma  # gamma is consumed in _prepare_lab_input and final decode.
+    # rgb is already encoded by _prepare_lab_input.
+    return cv2.cvtColor(np.clip(rgb, 0.0, 1.0).astype(np.float32), cv2.COLOR_RGB2Lab)
 
 
 def _lab_to_srgb_like(lab: np.ndarray, gamma: float) -> np.ndarray:
-    linear = np.maximum(_lab_to_linear_rgb(lab), 0.0)
-    return np.power(linear, 1.0 / max(float(gamma), 1e-6)).astype(np.float32)
-
-
-def _linear_rgb_to_lab(rgb: np.ndarray) -> np.ndarray:
-    xyz = np.tensordot(np.maximum(rgb, 0.0), _RGB_TO_XYZ.T, axes=1).astype(np.float32)
-    xyz_scaled = xyz / _D65[np.newaxis, np.newaxis, :]
-    f = _lab_f(xyz_scaled)
-    L = 116.0 * f[..., 1] - 16.0
-    a = 500.0 * (f[..., 0] - f[..., 1])
-    b = 200.0 * (f[..., 1] - f[..., 2])
-    return np.stack([L, a, b], axis=2).astype(np.float32)
-
-
-def _lab_to_linear_rgb(lab: np.ndarray) -> np.ndarray:
-    L = lab[..., 0]
-    a = lab[..., 1]
-    b = lab[..., 2]
-    fy = (L + 16.0) / 116.0
-    fx = fy + a / 500.0
-    fz = fy - b / 200.0
-    xyz_scaled = np.stack([_lab_f_inv(fx), _lab_f_inv(fy), _lab_f_inv(fz)], axis=2)
-    xyz = xyz_scaled * _D65[np.newaxis, np.newaxis, :]
-    return np.tensordot(xyz, _XYZ_TO_RGB.T, axes=1).astype(np.float32)
-
-
-def _lab_f(t: np.ndarray) -> np.ndarray:
-    delta = 6.0 / 29.0
-    return np.where(t > delta**3, np.cbrt(t), t / (3.0 * delta**2) + 4.0 / 29.0)
-
-
-def _lab_f_inv(t: np.ndarray) -> np.ndarray:
-    delta = 6.0 / 29.0
-    return np.where(t > delta, t**3, 3.0 * delta**2 * (t - 4.0 / 29.0))
+    del gamma  # kept for call-site compatibility.
+    # In this contract, Lab2RGB output is treated as encoded RGB for Stage 3.
+    return np.clip(cv2.cvtColor(lab.astype(np.float32), cv2.COLOR_Lab2RGB), 0.0, 1.0).astype(np.float32)
 
 
 def _validate_rgb(img: np.ndarray) -> np.ndarray:
