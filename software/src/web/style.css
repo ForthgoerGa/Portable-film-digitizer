@@ -32,13 +32,52 @@ body {
 }
 
 header {
-    text-align: center;
+    display: flex;
+    justify-content: space-between;
+    align-items: flex-start;
+    gap: 20px;
     margin-bottom: 30px;
 }
 
 h1 {
     color: var(--primary-color);
     margin-bottom: 10px;
+}
+
+.motor-status-bar {
+    min-width: 240px;
+    padding: 12px 14px;
+    background-color: white;
+    border: 1px solid var(--border-color);
+    border-radius: 4px;
+    box-shadow: var(--shadow);
+}
+
+.motor-status-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+}
+
+.motor-status-row + .motor-status-row {
+    margin-top: 8px;
+}
+
+.motor-axis {
+    min-width: 16px;
+    font-weight: 700;
+    color: var(--dark-text);
+}
+
+.motor-state {
+    font-weight: 700;
+}
+
+.motor-position {
+    font-weight: 500;
+    color: var(--dark-text);
+    font-variant-numeric: tabular-nums;
 }
 
 h2 {
@@ -160,6 +199,8 @@ h3 {
 
 /* Status Colors */
 .status-idle { color: var(--secondary-color); }
+.status-moving { color: var(--primary-color); }
+.status-reset { color: var(--success-color); }
 .status-scanning { color: var(--primary-color); }
 .status-returning_home { color: var(--warning-color); }
 .status-cancelled { color: var(--secondary-color); }
@@ -181,45 +222,6 @@ h3 {
     background-color: var(--primary-color);
     width: 0%;
     transition: width 0.3s ease;
-}
-
-/* Motor Control Section */
-.axis-controls {
-    display: flex;
-    gap: 30px;
-    margin-bottom: 20px;
-    flex-wrap: wrap;
-}
-
-.axis-group {
-    flex: 1;
-    min-width: 200px;
-}
-
-.axis-group .buttons {
-    display: flex;
-    gap: 10px;
-    margin-bottom: 15px;
-}
-
-.motor-status {
-    text-align: center;
-    padding: 10px;
-    background-color: white;
-    border: 1px solid var(--border-color);
-    border-radius: 4px;
-    box-shadow: var(--shadow);
-}
-
-.motor-status .status {
-    font-weight: 500;
-    color: var(--secondary-color);
-}
-
-.motor-status .position-display {
-    margin-left: 20px;
-    font-weight: 500;
-    color: var(--dark-text);
 }
 
 /* Captures Viewer Section */

@@ -8,6 +8,9 @@ and basic scanning operations.
 import time
 from typing import Callable
 from pathlib import Path
+from dataclasses import dataclass, field
+from enum import Enum
+import threading
 
 import RPi.GPIO as GPIO
 
@@ -49,6 +52,50 @@ except ImportError:
     from picamera2 import Picamera2
 
 
+class MotorMode(Enum):
+    IDLE = "idle"
+    MOVING = "moving"
+    RESET = "reset"
+
+
+@dataclass
+class MotorState:
+    position: int = 0
+    mode: MotorMode = MotorMode.RESET
+    cv: threading.Condition = field(default_factory=threading.Condition)
+
+    def start_move(self) -> None:
+        with self.cv:
+            if self.mode == MotorMode.MOVING:
+                raise RuntimeError("Motor is moving")
+            self.mode = MotorMode.MOVING
+
+    def start_home(self) -> int:
+        with self.cv:
+            while self.mode == MotorMode.MOVING:
+                self.cv.wait()
+            if self.position == 0:
+                self.mode = MotorMode.RESET
+                self.cv.notify_all()
+                return 0
+            self.mode = MotorMode.MOVING
+            return -self.position
+
+    def finish_move(self, delta: int) -> None:
+        with self.cv:
+            self.position += delta
+            self.mode = MotorMode.RESET if self.position == 0 else MotorMode.IDLE
+            self.cv.notify_all()
+
+    def set_home(self) -> None:
+        with self.cv:
+            if self.mode == MotorMode.MOVING:
+                raise RuntimeError("Motor is moving")
+            self.position = 0
+            self.mode = MotorMode.RESET
+            self.cv.notify_all()
+
+
 class StepperMotor:
     """
     Represents a single stepper motor with GPIO control.
@@ -60,8 +107,7 @@ class StepperMotor:
         self.step_pin = step_pin
         self.dir_pin = dir_pin
         self.invert_dir = invert_dir
-        self.direction = 1  # 1 = forward, 0 = backward
-        self.position = 0  # Track current position in steps from origin
+        self.state = MotorState()
 
         # Setup GPIO
         GPIO.setup(step_pin, GPIO.OUT)
@@ -70,7 +116,6 @@ class StepperMotor:
 
     def set_direction(self, direction: int) -> None:
         """Set motor direction (0=backward, 1=forward)."""
-        self.direction = direction
         value = GPIO.HIGH if direction else GPIO.LOW
 
         if self.invert_dir:
@@ -101,12 +146,18 @@ class StepperMotor:
         ramp_len = min(len(ramp), steps // 2)
         return ramp[:ramp_len]
 
-    def move_steps(self, steps: int, target_delay: float) -> None:
+    def move_steps(self, delta: int, target_delay: float) -> None:
         """
         Move the motor by the specified number of steps.
 
         Uses acceleration ramping for smooth movement.
         """
+        if delta == 0:
+            return
+        steps = abs(delta)
+        direction = 1 if delta > 0 else 0
+        self.set_direction(direction)
+
         ramp = self.ramp_profile(steps, target_delay)
         ramp_len = len(ramp)
 
@@ -122,12 +173,33 @@ class StepperMotor:
         for d in reversed(ramp):
             self.step(d)
 
-        # Update position: positive steps move forward, negative move backward
-        self.position += steps
+    def move(self, delta: int, target_delay: float) -> None:
+        """Move the motor by the signed delta, updating state."""
+        if delta == 0:
+            return
+        self.state.start_move()
+        try:
+            self.move_steps(delta, target_delay)
+        finally:
+            self.state.finish_move(delta)
 
-    def get_position(self) -> int:
-        """Return current position in steps from origin."""
-        return self.position
+    def home(self, target_delay: float) -> None:
+        """Return the motor to home position."""
+        delta = self.state.start_home()
+        if delta == 0:
+            return
+        try:
+            self.move_steps(delta, target_delay)
+        finally:
+            self.state.finish_move(delta)
+
+    def set_home(self) -> None:
+        """Set current position as home."""
+        self.state.set_home()
+
+    def get_state(self) -> MotorState:
+        """Get current motor state."""
+        return self.state
 
 
 class Scanner:
@@ -144,13 +216,18 @@ class Scanner:
 
         # Create motors
         self.motor_x = StepperMotor(STEP_X, DIR_X, invert_dir=True)
-        self.motor_y = StepperMotor(STEP_Y, DIR_Y)
+        self.motor_y = StepperMotor(STEP_Y, DIR_Y, invert_dir=True)
 
         # Initialize camera
-        self.camera = Picamera2()
-        config = self.camera.create_still_configuration()
-        self.camera.configure(config)
-        self.camera.start()
+        try:
+            self.camera = Picamera2()
+            config = self.camera.create_still_configuration()
+            self.camera.configure(config)
+            self.camera.start()
+            self.camera_available = True
+        except IndexError:
+            self.camera = None
+            self.camera_available = False
 
     def set_capture_callback(self, callback: Callable[[int, int], None]) -> None:
         """Set the callback function for image capture."""
@@ -158,53 +235,48 @@ class Scanner:
 
     def move_x(self, steps: int) -> None:
         """Move X-axis motor by specified number of steps."""
-        direction = 1 if steps >= 0 else 0
-        steps = abs(steps)
-
-        self.motor_x.set_direction(direction)
-        self.motor_x.move_steps(steps, STEP_DELAY)
+        self.motor_x.move(steps, STEP_DELAY)
 
     def move_y(self, steps: int) -> None:
         """Move Y-axis motor by specified number of steps."""
-        direction = 1 if steps >= 0 else 0
-        steps = abs(steps)
-
-        self.motor_y.set_direction(direction)
-        self.motor_y.move_steps(steps, STEP_DELAY)
-
-    def home_x(self) -> None:
-        """Return X-axis to origin by moving to position 0."""
-        current = self.motor_x.position
-        if current != 0:
-            self.move_x(-current)
-
-    def home_y(self) -> None:
-        """Return Y-axis to origin by moving to position 0."""
-        current = self.motor_y.position
-        if current != 0:
-            self.move_y(-current)
+        self.motor_y.move(steps, STEP_DELAY)
 
     def return_to_origin(self) -> None:
         """Return both axes to origin position."""
-        self.home_x()
-        self.home_y()
+        self.motor_x.home(STEP_DELAY)
+        self.motor_y.home(STEP_DELAY)
 
     def set_home(self) -> None:
         """Set current position as home (origin = 0,0)."""
-        self.motor_x.position = 0
-        self.motor_y.position = 0
+        self.motor_x.set_home()
+        self.motor_y.set_home()
 
     def get_position(self) -> tuple[int, int]:
         """Return current (x, y) position."""
-        return (self.motor_x.position, self.motor_y.position)
+        return (self.motor_x.state.position, self.motor_y.state.position)
+
+    def get_motor_states(self) -> tuple[MotorState, MotorState]:
+        """Return current motor states."""
+        return (self.motor_x.get_state(), self.motor_y.get_state())
+
+    def is_any_motor_moving(self) -> bool:
+        """Check if any motor is currently moving."""
+        return (
+            self.motor_x.state.mode == MotorMode.MOVING
+            or self.motor_y.state.mode == MotorMode.MOVING
+        )
 
     def capture(self, row: int, col: int) -> None:
         """Capture an image at the specified grid position."""
+        if not self.camera_available:
+            print("Camera not available, skipping capture")
+            return
         filename = CAPTURES_DIR / f"row_{row}_col_{col}.jpg"
         self.camera.capture_file(str(filename))
         print(f"Captured {filename}")
 
     def cleanup(self) -> None:
         """Clean up GPIO resources."""
-        self.camera.close()
+        if self.camera_available:
+            self.camera.close()
         GPIO.cleanup()

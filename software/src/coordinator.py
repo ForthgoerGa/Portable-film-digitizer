@@ -117,6 +117,38 @@ class ScannerCoordinator:
 
             return status
 
+    def move_motors(self, x_steps: int, y_steps: int) -> None:
+        """
+        Move motors by specified steps.
+
+        Raises RuntimeError if any motor is currently moving.
+        """
+        if self.scanner.is_any_motor_moving():
+            raise RuntimeError("Motor is moving")
+
+        if x_steps != 0:
+            self.scanner.move_x(x_steps)
+        if y_steps != 0:
+            self.scanner.move_y(y_steps)
+
+    def home_motors(self) -> None:
+        """
+        Return motors to home/origin position.
+
+        This operation waits for any current motion to complete.
+        """
+        self.scanner.return_to_origin()
+
+    def set_home_motors(self) -> None:
+        """
+        Set current motor position as home (origin).
+
+        Raises RuntimeError if any motor is currently moving.
+        """
+        if self.scanner.is_any_motor_moving():
+            raise RuntimeError("Motor is moving")
+        self.scanner.set_home()
+
     def _calculate_progress(self) -> float:
         """Calculate scan completion percentage."""
         if self.state not in [ScannerState.SCANNING, ScannerState.RETURNING_HOME]:
@@ -140,7 +172,6 @@ class ScannerCoordinator:
         try:
             # Start moving right
             direction = 1
-            self.scanner.motor_x.set_direction(direction)
 
             for row in range(Y_SEGMENTS):
                 with self._lock:
@@ -169,7 +200,6 @@ class ScannerCoordinator:
 
                 # Reverse X direction for serpentine pattern
                 direction ^= 1
-                self.scanner.motor_x.set_direction(direction)
 
             # Return to origin
             with self._lock:

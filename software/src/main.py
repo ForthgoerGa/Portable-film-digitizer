@@ -101,8 +101,24 @@ def get_scan_status():
     return coordinator.get_status()
 
 
-# Motor control endpoints
-@app.post("/motor/move")
+# Motor control endpoints (read-only status remains under /motor)
+@app.get("/motor/status")
+def get_motor_status():
+    """Get the current motor positions and modes."""
+    x_state, y_state = coordinator.scanner.get_motor_states()
+    return {
+        "x": {
+            "position": x_state.position,
+            "mode": x_state.mode.value,
+        },
+        "y": {
+            "position": y_state.position,
+            "mode": y_state.mode.value,
+        },
+    }
+
+
+@app.post("/scan/move")
 def move_motors(request: dict):
     """
     Move motors by specified steps.
@@ -117,38 +133,30 @@ def move_motors(request: dict):
     y_steps = request.get("y", 0)
 
     try:
-        if x_steps != 0:
-            coordinator.scanner.move_x(x_steps)
-        if y_steps != 0:
-            coordinator.scanner.move_y(y_steps)
-
+        coordinator.move_motors(x_steps, y_steps)
         return {"status": "moved", "x_steps": x_steps, "y_steps": y_steps}
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Motor movement failed: {str(e)}")
+    except RuntimeError as e:
+        raise HTTPException(status_code=409, detail=str(e))
 
 
-@app.post("/motor/home")
+@app.post("/scan/home")
 def home_motors():
     """Return motors to home/origin position."""
     try:
-        coordinator.scanner.return_to_origin()
+        coordinator.home_motors()
         return {"status": "homed"}
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Home operation failed: {str(e)}")
 
 
-@app.post("/motor/set_home")
+@app.post("/scan/set_home")
 def set_home():
     """Set current motor position as home (origin)."""
-    coordinator.scanner.set_home()
-    return {"status": "home_set"}
-
-
-@app.get("/motor/position")
-def get_position():
-    """Get current motor position."""
-    x, y = coordinator.scanner.get_position()
-    return {"x": x, "y": y}
+    try:
+        coordinator.set_home_motors()
+        return {"status": "home_set"}
+    except RuntimeError as e:
+        raise HTTPException(status_code=409, detail=str(e))
 
 
 # Capture file browser endpoints
