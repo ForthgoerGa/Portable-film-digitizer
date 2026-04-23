@@ -9,9 +9,8 @@ from fastapi import FastAPI, HTTPException
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import RedirectResponse, FileResponse
 from pathlib import Path
-import os
 import mimetypes
-from typing import List, Dict, Any
+from typing import Dict, Any
 
 try:
     from .coordinator import ScannerCoordinator
@@ -36,6 +35,8 @@ def safe_resolve_path(path: str) -> Path:
         full_path.relative_to(CAPTURES_DIR)
     except ValueError:
         raise HTTPException(status_code=400, detail="Path outside captures directory")
+
+    return full_path
 
 
 # Create coordinator instance

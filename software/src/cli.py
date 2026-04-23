@@ -10,7 +10,6 @@ import sys
 import json
 import urllib.request
 import urllib.error
-import os
 from typing import Optional
 
 API_BASE = "http://localhost:5000"
@@ -47,10 +46,10 @@ def color(text: str, color_name: str) -> str:
     return f"{COLORS.get(color_name, '')}{text}{COLORS['reset']}"
 
 
-def api_get(endpoint: str) -> Optional[dict]:
+def api_get(endpoint: str, timeout: int = 5) -> Optional[dict]:
     try:
         req = urllib.request.Request(f"{API_BASE}{endpoint}")
-        with urllib.request.urlopen(req, timeout=5) as resp:
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
             return json.loads(resp.read().decode())
     except urllib.error.URLError as e:
         print(f"Error: Cannot connect to server - {e}")
@@ -60,7 +59,9 @@ def api_get(endpoint: str) -> Optional[dict]:
         return None
 
 
-def api_post(endpoint: str, data: Optional[dict] = None) -> Optional[dict]:
+def api_post(
+    endpoint: str, data: Optional[dict] = None, timeout: int = 5
+) -> Optional[dict]:
     try:
         req = urllib.request.Request(
             f"{API_BASE}{endpoint}",
@@ -68,7 +69,7 @@ def api_post(endpoint: str, data: Optional[dict] = None) -> Optional[dict]:
             headers={"Content-Type": "application/json"} if data else {},
             method="POST",
         )
-        with urllib.request.urlopen(req, timeout=5) as resp:
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
             return json.loads(resp.read().decode())
     except urllib.error.URLError as e:
         print(f"Error: Cannot connect to server - {e}")
@@ -78,7 +79,7 @@ def api_post(endpoint: str, data: Optional[dict] = None) -> Optional[dict]:
         try:
             err = json.loads(body)
             print(f"Error: {err.get('detail', str(e))}")
-        except:
+        except json.JSONDecodeError:
             print(f"Error: HTTP {e.code}")
         return None
     except Exception as e:
@@ -137,13 +138,17 @@ def cmd_move(args: list) -> None:
         print("Error: steps must be integers")
         return
 
-    result = api_post("/motor/move", {"x": x, "y": y})
+    # Use longer timeout for large moves (up to 5 minutes)
+    timeout = max(
+        300, abs(x) // 10000 + abs(y) // 10000
+    )  # 300s base + 1s per 10k steps
+    result = api_post("/motor/move", {"x": x, "y": y}, timeout=timeout)
     if result:
         print(f"Moved: X={result.get('x_steps', x)}, Y={result.get('y_steps', y)}")
 
 
 def cmd_home(args: list) -> None:
-    result = api_post("/motor/home")
+    result = api_post("/motor/home", timeout=300)  # 5 minute timeout for homing
     if result:
         print("Motors homed")
 
