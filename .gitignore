@@ -49,5 +49,6 @@ Agentic_Post_Processing/data/
 Image_integration&Post_Processing/output_demo/
 
 software/web/generated/
+software/web/jobs/
 software/web/pi_captures/
 software/web/pi_processed/

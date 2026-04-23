@@ -3,153 +3,109 @@
 <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>Film Digitizer Control</title>
+    <title>Film Digitizer</title>
     <link rel="stylesheet" href="style.css" />
 </head>
 <body>
     <main class="container">
-        <h1>Film Digitizer Control</h1>
-
-        <nav class="tabs">
-            <button class="tab-btn active" data-tab="camera">Camera &amp; Capture</button>
-            <button class="tab-btn" data-tab="scan">Scan Debug</button>
-        </nav>
-
-        <!-- ── Camera & Capture tab ── -->
-        <div id="tab-camera" class="tab-panel active">
-
-            <section class="camera-layout">
-                <div class="stream-pane">
-                    <img id="liveStream" src="/camera/stream" alt="Live camera feed" />
-                    <div id="streamOverlay" class="stream-overlay hidden">
-                        <span>Capturing…</span>
-                    </div>
+        <header class="app-header">
+            <div>
+                <h1>Film Digitizer</h1>
+                <p class="subhead">One-click scan on Pi, processing on PC.</p>
+            </div>
+            <div class="sys-status">
+                <div class="sys-indicator">
+                    <span class="sys-dot" id="piScannerDot"></span>
+                    <span id="piScannerLabel" class="sys-label">Pi Scanner</span>
                 </div>
-                <div class="camera-sidebar">
-                    <div class="controls">
-                        <h2>Camera Controls</h2>
-                        <div class="controls-row">
-                            <button id="captureBtn" class="primary capture-btn">&#9679; Capture</button>
+            </div>
+        </header>
+
+        <section class="job-shell">
+            <div class="job-actions">
+                <button id="scanBtn" class="primary scan-btn">One-Click Scan</button>
+                <button id="cancelBtn" class="secondary" disabled>Cancel</button>
+            </div>
+            <div id="jobStatusText" class="job-status-text">
+                Idle. Press One-Click Scan to start.
+            </div>
+        </section>
+
+        <section id="progressSection" class="progress-section hidden">
+            <div class="progress-header">
+                <span id="stageLabel" class="stage-label">Dispatching job to Pi</span>
+                <span id="progressPct" class="progress-pct-label">0%</span>
+            </div>
+            <div class="progress-track unified-track">
+                <div id="unifiedBar" class="progress-bar unified-bar" style="width: 0%"></div>
+            </div>
+            <div class="stage-steps" id="stageSteps"></div>
+        </section>
+
+        <section id="resultsSection" class="results hidden">
+            <div class="compare-grid">
+                <article class="image-card">
+                    <h2>Raw Preview</h2>
+                    <div class="img-placeholder" id="rawPlaceholder">Waiting for raw preview.</div>
+                    <img id="rawImg" class="result-img hidden" alt="Raw scan preview" />
+                </article>
+                <article class="image-card">
+                    <h2>Final Preview</h2>
+                    <div class="img-placeholder" id="finalPlaceholder">Waiting for final preview.</div>
+                    <img id="finalImg" class="result-img hidden" alt="Final processed image" />
+                </article>
+            </div>
+        </section>
+
+        <details class="dev-panel">
+            <summary>Developer Tools</summary>
+            <div class="dev-panel-inner">
+                <section class="dev-section">
+                    <div class="dev-status-line">
+                        <span class="dev-status-label">Pi Camera</span>
+                        <span id="piCameraDevStatus" class="camera-status">Checking...</span>
+                    </div>
+                </section>
+
+                <section class="dev-section">
+                    <h2>Process Existing Capture</h2>
+                    <p class="meta-line">Run the current preview-based processing path without scanning.</p>
+                    <div class="controls-row">
+                        <span id="devSelectedInfo" class="filename-tag dev-selected-none">None selected</span>
+                        <button id="devProcessBtn" class="accent" disabled>Process Selected</button>
+                    </div>
+                    <div class="controls-row">
+                        <button id="devCaptureBtn" class="capture-btn">Capture and Import from Pi Camera</button>
+                        <span id="devCaptureStatus" class="camera-status"></span>
+                    </div>
+                    <div class="gallery-section">
+                        <div class="gallery-header">
+                            <h2>Local Captures</h2>
+                            <span id="captureCount" class="count-badge"></span>
                         </div>
-                        <div id="cameraStatus" class="camera-status">Ready</div>
-                        <hr class="divider" />
-                        <h2>AI Processing</h2>
-                        <div class="controls-row">
-                            <button id="processBtn" class="ai-btn" disabled>&#10024; Process with AI</button>
-                        </div>
-                        <div id="processStatus" class="camera-status">Select a capture first</div>
-                        <hr class="divider" />
-                        <div class="selected-capture-info" id="selectedInfo" style="display:none">
-                            <span class="label">Selected:</span>
-                            <span id="selectedFilename" class="filename-tag"></span>
-                        </div>
+                        <div id="captureGallery" class="gallery-grid"></div>
                     </div>
-                </div>
-            </section>
+                </section>
 
-            <!-- Live processing progress panel -->
-            <section id="processingPanel" class="results hidden">
-                <h2>AI Pipeline — Running</h2>
-                <div id="pipelineHeader" class="pipeline-header"></div>
-                <div id="iterProgressRow" class="iter-progress-row">
-                    <span id="iterLabel" class="iter-label">Iteration 0 / ?</span>
-                    <div class="progress-track">
-                        <div id="iterBar" class="progress-bar iter-bar" style="width:0%"></div>
+                <section class="dev-section">
+                    <h2>Calibration</h2>
+                    <div class="controls-row">
+                        <button id="backlightBtn" class="ghost">Capture Backlight Frame</button>
+                        <span id="backlightStatus" class="camera-status"></span>
                     </div>
-                </div>
-                <div id="scoreProgressRow" class="iter-progress-row">
-                    <span id="scoreLabel" class="iter-label">Score —</span>
-                    <div class="progress-track">
-                        <div id="scoreBar" class="progress-bar score-bar" style="width:0%"></div>
+                </section>
+
+                <section class="dev-section">
+                    <h2>Serial Port</h2>
+                    <div class="controls-row">
+                        <label for="serialPortSelect">Port</label>
+                        <select id="serialPortSelect">
+                            <option value="">Select Port</option>
+                        </select>
                     </div>
-                </div>
-                <div id="liveFeedback" class="ai-feedback hidden"></div>
-                <div id="iterationLog" class="iteration-log"></div>
-                <details id="liveParamsDetails" class="param-details hidden">
-                    <summary>Current Parameters</summary>
-                    <div id="liveParams" class="param-grid"></div>
-                </details>
-            </section>
-
-            <!-- AI result -->
-            <section id="aiResultSection" class="results hidden">
-                <h2>AI Processing Result</h2>
-                <div id="aiMeta" class="ai-meta-grid"></div>
-                <div class="compare-grid">
-                    <article class="image-card">
-                        <h3>Original Capture</h3>
-                        <img id="aiBeforeImg" alt="Original capture" />
-                    </article>
-                    <article class="image-card">
-                        <h3>Processed Output</h3>
-                        <img id="aiAfterImg" alt="Processed output" />
-                    </article>
-                </div>
-            </section>
-
-            <!-- Gallery -->
-            <section class="results">
-                <h2>Captures <span id="captureCount" class="count-badge"></span></h2>
-                <p class="meta-line">Click a thumbnail to select it for AI processing.</p>
-                <div id="captureGallery" class="gallery-grid"></div>
-            </section>
-
-        </div>
-
-        <!-- ── Scan Debug tab ── -->
-        <div id="tab-scan" class="tab-panel">
-
-            <section class="controls">
-                <div class="controls-row">
-                    <label for="format">Film Format:</label>
-                    <select id="format">
-                        <option value="35mm">35mm</option>
-                        <option value="120">120</option>
-                        <option value="instax">Instax</option>
-                    </select>
-                </div>
-                <div class="controls-row">
-                    <button id="start" class="primary">Start Scan</button>
-                    <button id="cancel" class="secondary" disabled>Cancel</button>
-                </div>
-            </section>
-
-            <section class="controls">
-                <div class="controls-row">
-                    <label for="serialPortSelect">Serial Port:</label>
-                    <select id="serialPortSelect">
-                        <option value="">Select Port</option>
-                    </select>
-                </div>
-            </section>
-
-            <section class="status">
-                <h2>Status</h2>
-                <div id="stateBadge" class="badge ready">Ready</div>
-                <div id="resultArea"></div>
-            </section>
-
-            <section class="results">
-                <h2>Fractions Grid</h2>
-                <div id="fractionsMeta" class="meta-line"></div>
-                <div id="fractionsGrid" class="fractions-grid"></div>
-            </section>
-
-            <section class="results">
-                <h2>Integrated vs Output</h2>
-                <div class="compare-grid">
-                    <article class="image-card">
-                        <h3>Integrated Raw Image</h3>
-                        <img id="rawImage" alt="Integrated raw image preview" />
-                    </article>
-                    <article class="image-card">
-                        <h3>Final Output (White-Balanced)</h3>
-                        <img id="finalImage" alt="Final white-balanced output preview" />
-                    </article>
-                </div>
-            </section>
-
-        </div>
+                </section>
+            </div>
+        </details>
     </main>
     <script src="app.js"></script>
 </body>
