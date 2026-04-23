@@ -5,27 +5,11 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any, Literal
 
+import cv2
 import numpy as np
 
 _EPS = 1e-6
-_D65 = np.array([0.95047, 1.0, 1.08883], dtype=np.float32)
 _LUMA = np.array([0.2126, 0.7152, 0.0722], dtype=np.float32)
-_RGB_TO_XYZ = np.array(
-    [
-        [0.4124564, 0.3575761, 0.1804375],
-        [0.2126729, 0.7151522, 0.0721750],
-        [0.0193339, 0.1191920, 0.9503041],
-    ],
-    dtype=np.float32,
-)
-_XYZ_TO_RGB = np.array(
-    [
-        [3.2404542, -1.5371385, -0.4985314],
-        [-0.9692660, 1.8760108, 0.0415560],
-        [0.0556434, -0.2040259, 1.0572252],
-    ],
-    dtype=np.float32,
-)
 
 STAGE2_DEFAULT_PARAMS: dict[str, Any] = {
     "gray_norm_enabled": True,
@@ -276,6 +260,13 @@ def _stage2_perceptual_tone_base_impl(
         rolloff_diag = {"enabled": False}
 
     lab_out = np.stack([L_after_rolloff * 100.0, a, b], axis=2).astype(np.float32)
+    # Color-space contract:
+    # - srgb_encoded mode is the product path: img_lab_in and rgb_from_lab are
+    #   encoded RGB buffers, and we decode exactly once below to recover
+    #   pipeline-linear RGB.
+    # - linear_direct is retained only as a debug/legacy mode. OpenCV's float
+    #   Lab conversion is not a strict linear-RGB Lab contract, so do not treat
+    #   it as the validated product color path.
     rgb_from_lab = _lab_to_rgb_for_mode(
         lab_out,
         mode=lab_input_mode,
@@ -393,6 +384,9 @@ def _prepare_lab_input(
 ) -> tuple[np.ndarray, dict[str, Any]]:
     x = np.maximum(img.astype(np.float32), 0.0)
     if mode == "srgb_encoded":
+        # Contract: this branch returns preview-style encoded RGB in [0, 1],
+        # ready for cv2.COLOR_RGB2Lab with no additional gamma operation.
+        # Stage 2 decodes exactly once (encoded -> linear) after Lab->RGB.
         scale = _safe_percentile(x, percentile)
         x = x / (scale + max(float(eps), 1e-12))
         x = np.clip(x, 0.0, 1.0)
@@ -408,10 +402,16 @@ def _prepare_lab_input(
             "input_p95_rgb": [float(v) for v in np.percentile(x.reshape(-1, 3), 95.0, axis=0)],
         }
     if mode == "linear_direct":
+        # Debug/legacy mode only. This bypasses encoded preview preparation, but
+        # OpenCV's float RGB<->Lab semantics are not a strict linear-RGB Lab
+        # contract. The validated/default path is srgb_encoded.
         return x.astype(np.float32), {
             "enabled": True,
             "mode": mode,
-            "warning": "Direct linear RGB to Lab is retained only as a debugging option.",
+            "warning": (
+                "linear_direct is retained only as a debugging option; "
+                "srgb_encoded is the validated Stage 2 Lab path."
+            ),
         }
     raise ValueError(f"Unsupported lab_input_mode: {mode}")
 
@@ -478,53 +478,28 @@ def _global_highlight_rolloff(
 
 
 def _rgb_to_lab_for_mode(rgb: np.ndarray, mode: str, gamma: float) -> np.ndarray:
+    del gamma  # gamma is consumed in _prepare_lab_input and in the final decode step.
     if mode == "srgb_encoded":
-        linear = np.power(np.clip(rgb, 0.0, 1.0), max(float(gamma), 1e-6))
-        return _linear_rgb_to_lab(linear)
+        # Contract: rgb is already encoded by _prepare_lab_input.
+        # cv2.COLOR_RGB2Lab receives encoded RGB in this mode.
+        return cv2.cvtColor(np.clip(rgb, 0.0, 1.0).astype(np.float32), cv2.COLOR_RGB2Lab)
     if mode == "linear_direct":
-        return _linear_rgb_to_lab(rgb)
+        # Debug/legacy mode; see _prepare_lab_input for the contract caveat.
+        return cv2.cvtColor(np.maximum(rgb, 0.0).astype(np.float32), cv2.COLOR_RGB2Lab)
     raise ValueError(f"Unsupported lab_input_mode: {mode}")
 
 
 def _lab_to_rgb_for_mode(lab: np.ndarray, mode: str, gamma: float) -> np.ndarray:
-    linear = _lab_to_linear_rgb(lab)
+    del gamma  # kept for signature compatibility with existing call sites.
+    rgb = cv2.cvtColor(lab.astype(np.float32), cv2.COLOR_Lab2RGB)
     if mode == "srgb_encoded":
-        return np.power(np.maximum(linear, 0.0), 1.0 / max(float(gamma), 1e-6)).astype(np.float32)
+        # Contract: in srgb_encoded mode, Lab2RGB is treated as encoded RGB.
+        # Caller is responsible for a single decode back to linear pipeline data.
+        return np.clip(rgb, 0.0, 1.0).astype(np.float32)
     if mode == "linear_direct":
-        return linear.astype(np.float32)
+        # Debug/legacy mode; output is only passed through for inspection.
+        return np.maximum(rgb, 0.0).astype(np.float32)
     raise ValueError(f"Unsupported lab_input_mode: {mode}")
-
-
-def _linear_rgb_to_lab(rgb: np.ndarray) -> np.ndarray:
-    xyz = np.tensordot(np.maximum(rgb, 0.0), _RGB_TO_XYZ.T, axes=1).astype(np.float32)
-    xyz_scaled = xyz / _D65[np.newaxis, np.newaxis, :]
-    f = _lab_f(xyz_scaled)
-    L = 116.0 * f[..., 1] - 16.0
-    a = 500.0 * (f[..., 0] - f[..., 1])
-    b = 200.0 * (f[..., 1] - f[..., 2])
-    return np.stack([L, a, b], axis=2).astype(np.float32)
-
-
-def _lab_to_linear_rgb(lab: np.ndarray) -> np.ndarray:
-    L = lab[..., 0]
-    a = lab[..., 1]
-    b = lab[..., 2]
-    fy = (L + 16.0) / 116.0
-    fx = fy + a / 500.0
-    fz = fy - b / 200.0
-    xyz_scaled = np.stack([_lab_f_inv(fx), _lab_f_inv(fy), _lab_f_inv(fz)], axis=2)
-    xyz = xyz_scaled * _D65[np.newaxis, np.newaxis, :]
-    return np.tensordot(xyz, _XYZ_TO_RGB.T, axes=1).astype(np.float32)
-
-
-def _lab_f(t: np.ndarray) -> np.ndarray:
-    delta = 6.0 / 29.0
-    return np.where(t > delta**3, np.cbrt(t), t / (3.0 * delta**2) + 4.0 / 29.0)
-
-
-def _lab_f_inv(t: np.ndarray) -> np.ndarray:
-    delta = 6.0 / 29.0
-    return np.where(t > delta, t**3, 3.0 * delta**2 * (t - 4.0 / 29.0))
 
 
 def _smoothstep(edge0: float, edge1: float, x: np.ndarray) -> np.ndarray:
