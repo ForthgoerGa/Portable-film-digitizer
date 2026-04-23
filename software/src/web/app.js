@@ -233,7 +233,7 @@ class ScannerUI {
     renderCapturesTree(tree) {
         this.capturesTree.innerHTML = '';
         if (tree) {
-            this.capturesTree.appendChild(this.buildTreeElement(tree));
+            this.capturesTree.appendChild(this.buildTreeElement(tree, ""));
         }
     }
 
@@ -242,7 +242,13 @@ class ScannerUI {
         const item = document.createElement('div');
         item.className = `tree-item ${node.type}`;
         item.textContent = node.name;
-        item.onclick = () => this.selectCaptureItem(parentPath ? `${parentPath}/${node.name}` : node.name, node.type);
+
+        let fullPath;
+        if (!parentPath && node.type === 'directory') {
+            fullPath = "";
+        } else {
+            fullPath = parentPath ? `${parentPath}/${node.name}` : node.name;
+        }
 
         li.appendChild(item);
 
@@ -254,13 +260,15 @@ class ScannerUI {
                 e.stopPropagation();
                 ul.classList.toggle('tree-collapsed');
                 item.classList.toggle('tree-expanded');
-                this.selectCaptureItem(parentPath ? `${parentPath}/${node.name}` : node.name, node.type);
+                this.selectCaptureItem(fullPath, node.type);
             };
 
             node.children.forEach(child => {
-                ul.appendChild(this.buildTreeElement(child, parentPath ? `${parentPath}/${node.name}` : node.name));
+                ul.appendChild(this.buildTreeElement(child, fullPath));
             });
             li.appendChild(ul);
+        } else {
+            item.onclick = () => this.selectCaptureItem(fullPath, node.type);
         }
 
         return li;
