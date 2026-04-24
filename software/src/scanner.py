@@ -6,13 +6,18 @@ and basic scanning operations.
 """
 
 import time
-from typing import Callable
-from pathlib import Path
+from typing import Callable, Any
 from dataclasses import dataclass, field
 from enum import Enum
 import threading
+from pathlib import Path
 
 import RPi.GPIO as GPIO
+
+try:
+    from libcamera import controls
+except ImportError:
+    controls = None
 
 try:
     from .config import (
@@ -30,6 +35,14 @@ try:
         X_STEPS_PER_SEG,
         Y_STEPS_PER_SEG,
         CAPTURES_DIR,
+        RAW_CAPTURE_ENABLED,
+        CAPTURE_EXTENSION,
+        PREVIEW_EXTENSION,
+        CAPTURE_EXPOSURE_US,
+        CAPTURE_ANALOGUE_GAIN,
+        CAPTURE_COLOUR_GAINS,
+        CAPTURE_AWB_ENABLE,
+        CAPTURE_DENOISE_MODE,
     )
     from .picamera2 import Picamera2
 except ImportError:
@@ -48,6 +61,14 @@ except ImportError:
         X_STEPS_PER_SEG,
         Y_STEPS_PER_SEG,
         CAPTURES_DIR,
+        RAW_CAPTURE_ENABLED,
+        CAPTURE_EXTENSION,
+        PREVIEW_EXTENSION,
+        CAPTURE_EXPOSURE_US,
+        CAPTURE_ANALOGUE_GAIN,
+        CAPTURE_COLOUR_GAINS,
+        CAPTURE_AWB_ENABLE,
+        CAPTURE_DENOISE_MODE,
     )
     from picamera2 import Picamera2
 
@@ -221,13 +242,32 @@ class Scanner:
         # Initialize camera
         try:
             self.camera = Picamera2()
-            config = self.camera.create_still_configuration()
+            config = self.camera.create_still_configuration(
+                main={"format": "RGB888"},
+                raw={},
+                controls=self._camera_controls(),
+            )
             self.camera.configure(config)
             self.camera.start()
+            self.camera.set_controls(self._camera_controls())
             self.camera_available = True
         except IndexError:
             self.camera = None
             self.camera_available = False
+
+    def _camera_controls(self) -> dict[str, Any]:
+        """Fixed capture controls for RAW-friendly post-processing."""
+        camera_controls: dict[str, Any] = {
+            "AeEnable": False,
+            "AwbEnable": bool(CAPTURE_AWB_ENABLE),
+            "ExposureTime": int(CAPTURE_EXPOSURE_US),
+            "AnalogueGain": float(CAPTURE_ANALOGUE_GAIN),
+            "ColourGains": tuple(CAPTURE_COLOUR_GAINS),
+        }
+        denoise_mode = _noise_reduction_mode(CAPTURE_DENOISE_MODE)
+        if denoise_mode is not None:
+            camera_controls["NoiseReductionMode"] = denoise_mode
+        return camera_controls
 
     def set_capture_callback(self, callback: Callable[[int, int], None]) -> None:
         """Set the callback function for image capture."""
@@ -235,16 +275,24 @@ class Scanner:
 
     def move_x(self, steps: int) -> None:
         """Move X-axis motor by specified number of steps."""
+        _validate_move_delta(steps, X_STEPS_PER_SEG, "x")
         self.motor_x.move(steps, STEP_DELAY)
 
     def move_y(self, steps: int) -> None:
         """Move Y-axis motor by specified number of steps."""
+        _validate_move_delta(steps, Y_STEPS_PER_SEG, "y")
         self.motor_y.move(steps, STEP_DELAY)
+
+    def move_to(self, x_position: int, y_position: int) -> None:
+        """Move to an absolute position using safe per-segment chunks."""
+        current_x, current_y = self.get_position()
+        self._move_axis_to(self.motor_x, int(x_position) - current_x, X_STEPS_PER_SEG)
+        self._move_axis_to(self.motor_y, int(y_position) - current_y, Y_STEPS_PER_SEG)
 
     def return_to_origin(self) -> None:
         """Return both axes to origin position."""
-        self.motor_x.home(STEP_DELAY)
-        self.motor_y.home(STEP_DELAY)
+        self._home_axis_segmented(self.motor_x, X_STEPS_PER_SEG)
+        self._home_axis_segmented(self.motor_y, Y_STEPS_PER_SEG)
 
     def set_home(self) -> None:
         """Set current position as home (origin = 0,0)."""
@@ -271,12 +319,115 @@ class Scanner:
         if not self.camera_available:
             print("Camera not available, skipping capture")
             return
-        filename = CAPTURES_DIR / f"row_{row}_col_{col}.jpg"
-        self.camera.capture_file(str(filename))
-        print(f"Captured {filename}")
+        CAPTURES_DIR.mkdir(parents=True, exist_ok=True)
+        stem = f"row_{row}_col_{col}"
+        raw_filename = CAPTURES_DIR / f"{stem}{CAPTURE_EXTENSION}"
+        preview_filename = CAPTURES_DIR / f"{stem}{PREVIEW_EXTENSION}"
+
+        request = self.camera.capture_request()
+        try:
+            if RAW_CAPTURE_ENABLED:
+                self._save_dng(request, raw_filename)
+            request.save("main", str(preview_filename))
+        finally:
+            request.release()
+
+        print(f"Captured {raw_filename} and {preview_filename}")
+
+    def capture_preview(self, preview_filename: Path) -> None:
+        """Capture one display preview frame without writing RAW data."""
+        if not self.camera_available:
+            raise RuntimeError("Camera not available")
+        preview_filename.parent.mkdir(parents=True, exist_ok=True)
+        request = self.camera.capture_request()
+        try:
+            request.save("main", str(preview_filename))
+        finally:
+            request.release()
+
+    def _save_dng(self, request: Any, raw_filename: Path) -> None:
+        """Save DNG across Picamera2/pidng versions.
+
+        Some Pi images ship a Picamera2 helper that calls pidng with a
+        ``file=`` keyword, while the installed pidng expects ``filename`` and
+        returns bytes when no filename is provided. Keep the normal API path
+        first, then fall back to the same raw buffer with a direct byte write.
+        """
+        try:
+            request.save_dng(str(raw_filename), name="raw")
+            return
+        except TypeError as exc:
+            if "unexpected keyword argument 'file'" not in str(exc):
+                raise
+            if raw_filename.exists() and raw_filename.stat().st_size == 0:
+                raw_filename.unlink()
+
+        import numpy as np
+        from picamera2 import request as picam_request
+
+        stream_name = "raw"
+        if request.stream_map.get(stream_name) is None:
+            raise RuntimeError(f"Stream {stream_name!r} is not defined")
+
+        config = request.config[stream_name].copy()
+        with picam_request._MappedBuffer(request, stream_name, write=False) as mapped:
+            buffer = np.array(mapped, copy=False, dtype=np.uint8)
+            raw = request.picam2.helpers._make_array_shared(buffer, config)
+
+        fmt = picam_request.SensorFormat(config["format"])
+        if fmt.packing == "PISP_COMP1":
+            raw = request.picam2.helpers.decompress(raw)
+            fmt.bit_depth = 16
+            config["format"] = fmt.unpacked
+            config["stride"] = raw.shape[1]
+            config["framesize"] = raw.shape[0] * raw.shape[1]
+
+        model = request.picam2.camera_properties.get("Model") or "Picamera2"
+        camera = picam_request.Picamera2Camera(config, request.get_metadata(), model)
+        writer = picam_request.PICAM2DNG(camera)
+        writer.options(compress=request.picam2.options.get("compress_level", 0))
+        dng_bytes = writer.convert(raw)
+        raw_filename.write_bytes(dng_bytes)
+
+    def _home_axis_segmented(self, motor: StepperMotor, max_delta: int) -> None:
+        """Home an axis using chunks no larger than the configured segment size."""
+        while motor.state.position != 0:
+            remaining = -motor.state.position
+            if remaining > 0:
+                delta = min(remaining, max_delta)
+            else:
+                delta = max(remaining, -max_delta)
+            motor.move(delta, STEP_DELAY)
+
+    def _move_axis_to(self, motor: StepperMotor, delta: int, max_delta: int) -> None:
+        """Move an axis by delta using chunks no larger than max_delta."""
+        remaining = int(delta)
+        while remaining != 0:
+            if remaining > 0:
+                step = min(remaining, max_delta)
+            else:
+                step = max(remaining, -max_delta)
+            motor.move(step, STEP_DELAY)
+            remaining -= step
 
     def cleanup(self) -> None:
         """Clean up GPIO resources."""
         if self.camera_available:
             self.camera.close()
         GPIO.cleanup()
+
+
+def _validate_move_delta(delta: int, max_abs_delta: int, axis: str) -> None:
+    if abs(int(delta)) > int(max_abs_delta):
+        raise ValueError(
+            f"{axis.upper()} move {delta} exceeds configured safe limit {max_abs_delta}"
+        )
+
+
+def _noise_reduction_mode(name: str):
+    if controls is None or not hasattr(controls, "draft"):
+        return None
+    enum = getattr(controls.draft, "NoiseReductionModeEnum", None)
+    if enum is None:
+        return None
+    return getattr(enum, str(name), None)

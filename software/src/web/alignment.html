@@ -1,0 +1,96 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Tile Alignment Calibration</title>
+    <link rel="stylesheet" href="style.css">
+</head>
+<body>
+    <div class="alignment-shell">
+        <header class="alignment-header">
+            <div>
+                <h1>Tile Alignment Calibration</h1>
+                <a href="/web/">Back to scanner</a>
+            </div>
+            <div id="saveStatus" class="alignment-status">Not saved</div>
+        </header>
+
+        <main class="alignment-layout">
+            <section class="alignment-controls">
+                <h2>Pair</h2>
+                <div class="control-grid">
+                    <label for="axisSelect">Axis</label>
+                    <select id="axisSelect">
+                        <option value="x">Horizontal neighbor</option>
+                        <option value="y">Vertical neighbor</option>
+                    </select>
+
+                    <label for="rowSelect">Row</label>
+                    <select id="rowSelect"></select>
+
+                    <label for="colSelect">Column</label>
+                    <select id="colSelect"></select>
+
+                    <label for="bandInput">Seam band px</label>
+                    <input id="bandInput" type="number" min="128" max="1600" step="32" value="900">
+
+                    <label for="viewSelect">View</label>
+                    <select id="viewSelect">
+                        <option value="full">Full pair</option>
+                        <option value="seam">Seam zoom</option>
+                    </select>
+
+                    <label for="opacityInput">Overlay opacity</label>
+                    <input id="opacityInput" type="range" min="0.1" max="1" step="0.05" value="0.55">
+
+                    <label for="modeSelect">Mode</label>
+                    <select id="modeSelect">
+                        <option value="overlay">Overlay</option>
+                        <option value="difference">Difference</option>
+                    </select>
+                </div>
+
+                <h2>Placement</h2>
+                <div class="control-grid">
+                    <label for="dxInput">dx</label>
+                    <input id="dxInput" type="number" step="1" value="0">
+
+                    <label for="dyInput">dy</label>
+                    <input id="dyInput" type="number" step="1" value="0">
+                </div>
+
+                <div class="nudge-grid">
+                    <button data-nudge="-50,0" class="btn btn-secondary">Left 50</button>
+                    <button data-nudge="0,-50" class="btn btn-secondary">Up 50</button>
+                    <button data-nudge="0,50" class="btn btn-secondary">Down 50</button>
+                    <button data-nudge="50,0" class="btn btn-secondary">Right 50</button>
+                    <button data-nudge="-10,0" class="btn btn-secondary">Left 10</button>
+                    <button data-nudge="0,-10" class="btn btn-secondary">Up 10</button>
+                    <button data-nudge="0,10" class="btn btn-secondary">Down 10</button>
+                    <button data-nudge="10,0" class="btn btn-secondary">Right 10</button>
+                    <button data-nudge="-1,0" class="btn btn-secondary">Left 1</button>
+                    <button data-nudge="0,-1" class="btn btn-secondary">Up 1</button>
+                    <button data-nudge="0,1" class="btn btn-secondary">Down 1</button>
+                    <button data-nudge="1,0" class="btn btn-secondary">Right 1</button>
+                </div>
+
+                <div class="alignment-actions">
+                    <button id="loadPairBtn" class="btn btn-primary">Load Pair</button>
+                    <button id="resetPlacementBtn" class="btn btn-secondary">Reset</button>
+                    <button id="saveMeasurementBtn" class="btn btn-primary">Save Measurement</button>
+                </div>
+
+                <h2>Measurements</h2>
+                <pre id="measurementSummary" class="measurement-summary">No measurements loaded.</pre>
+            </section>
+
+            <section class="alignment-viewer">
+                <canvas id="alignmentCanvas" width="1400" height="900"></canvas>
+            </section>
+        </main>
+    </div>
+
+    <script src="alignment.js"></script>
+</body>
+</html>
