@@ -30,12 +30,8 @@
                 <h2>Scan Control</h2>
 
                 <div class="control-group">
-                    <label for="filmFormat">Film Format:</label>
-                    <select id="filmFormat">
-                        <option value="35mm">35mm</option>
-                        <option value="120">120 (Medium Format)</option>
-                        <option value="4x5">4x5 (Large Format)</option>
-                    </select>
+                    <span class="profile-label">Scan Profile:</span>
+                    <span id="scanProfile" class="profile-value">Standard</span>
                 </div>
 
                 <div class="control-group">
@@ -63,11 +59,53 @@
                 </div>
             </section>
 
+            <section class="motor-debug">
+                <h2>Motor Debug</h2>
+                <div class="control-group">
+                    <label for="moveStepInput">Move Steps:</label>
+                    <input id="moveStepInput" type="number" min="1" step="1" value="1000">
+                    <span id="moveLimit" class="hint">Limit loading...</span>
+                </div>
+                <div class="motor-debug-grid">
+                    <button id="moveXNegBtn" class="btn btn-secondary">X -</button>
+                    <button id="moveXPosBtn" class="btn btn-secondary">X +</button>
+                    <button id="moveYNegBtn" class="btn btn-secondary">Y -</button>
+                    <button id="moveYPosBtn" class="btn btn-secondary">Y +</button>
+                    <button id="homeMotorsBtn" class="btn btn-primary">Home</button>
+                </div>
+                <div class="control-group">
+                    <button id="setZeroBtn" class="btn btn-secondary">Set Zero</button>
+                    <span class="hint">Set current X/Y as new home position.</span>
+                </div>
+                <div class="control-group">
+                    <label for="targetXInput">Target X/Y:</label>
+                    <input id="targetXInput" type="number" min="0" step="1" value="0">
+                    <input id="targetYInput" type="number" min="0" step="1" value="0">
+                    <button id="moveToBtn" class="btn btn-primary">Move To</button>
+                </div>
+                <div class="manual-camera">
+                    <div class="manual-camera-actions">
+                        <button id="togglePreviewBtn" class="btn btn-secondary">Start Preview</button>
+                        <button id="refreshPreviewBtn" class="btn btn-secondary">Refresh Frame</button>
+                    </div>
+                    <img id="cameraPreview" alt="Live camera preview" style="display: none;">
+                </div>
+                <div class="control-group">
+                    <label for="checkpointLabelInput">Checkpoint:</label>
+                    <input id="checkpointLabelInput" type="text" value="boundary check">
+                    <input id="checkpointNoteInput" type="text" placeholder="note">
+                    <button id="saveCheckpointBtn" class="btn btn-primary">Save Checkpoint</button>
+                </div>
+                <pre id="checkpointList" class="checkpoint-list">No checkpoints loaded.</pre>
+                <div id="moveStatus" class="debug-status">Manual moves are limited to one configured segment.</div>
+            </section>
+
             <!-- Captures Viewer Section -->
             <section class="captures-viewer">
                 <h2>Captured Images</h2>
                 <div class="captures-controls">
                     <button id="refreshCapturesBtn" class="btn btn-secondary">Refresh</button>
+                    <a class="btn btn-secondary" href="/web/alignment.html">Alignment Tool</a>
                 </div>
                 <div class="captures-container">
                     <div class="captures-sidebar">
