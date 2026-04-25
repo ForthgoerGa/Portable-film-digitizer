@@ -1,0 +1,1108 @@
+{
+  "measurements": [
+    {
+      "created_at": 1777070507.7300148,
+      "capture_signature": "a3513a242199935ad0954f3aeeefdc4bc8e5545411289e6a05310c85b6e5b9ff",
+      "scan_profile": {
+        "profile": "standard",
+        "grid": {
+          "rows": 4,
+          "cols": 4
+        },
+        "steps_per_segment": {
+          "x": 43333,
+          "y": 38000
+        },
+        "max_position": {
+          "x": 130000,
+          "y": 120000
+        },
+        "capture_fov_steps": {
+          "x": 60000,
+          "y": 45000
+        },
+        "stitch_stride_px": {
+          "x": 2800,
+          "y": 2568
+        },
+        "stitch_x_axis_reversed": true,
+        "stitch_capture_indexing_mode": "serpentine_scan_order"
+      },
+      "coordinate_space": "physical_grid",
+      "axis": "x",
+      "row": 0,
+      "col": 0,
+      "neighbor_row": 0,
+      "neighbor_col": 1,
+      "dx": -2554,
+      "dy": 40,
+      "first_scan_row": 0,
+      "first_scan_col": 0,
+      "second_scan_row": 0,
+      "second_scan_col": 1,
+      "tile_width": 4056,
+      "tile_height": 3040,
+      "first_path": "row_0_col_0.jpg",
+      "second_path": "row_0_col_1.jpg",
+      "note": "manual preview alignment"
+    },
+    {
+      "created_at": 1777070667.0424507,
+      "capture_signature": "a3513a242199935ad0954f3aeeefdc4bc8e5545411289e6a05310c85b6e5b9ff",
+      "scan_profile": {
+        "profile": "standard",
+        "grid": {
+          "rows": 4,
+          "cols": 4
+        },
+        "steps_per_segment": {
+          "x": 43333,
+          "y": 38000
+        },
+        "max_position": {
+          "x": 130000,
+          "y": 120000
+        },
+        "capture_fov_steps": {
+          "x": 60000,
+          "y": 45000
+        },
+        "stitch_stride_px": {
+          "x": 2800,
+          "y": 2568
+        },
+        "stitch_x_axis_reversed": true,
+        "stitch_capture_indexing_mode": "serpentine_scan_order"
+      },
+      "coordinate_space": "physical_grid",
+      "axis": "x",
+      "row": 0,
+      "col": 2,
+      "neighbor_row": 0,
+      "neighbor_col": 3,
+      "dx": -2624,
+      "dy": 0,
+      "first_scan_row": 0,
+      "first_scan_col": 2,
+      "second_scan_row": 0,
+      "second_scan_col": 3,
+      "tile_width": 4056,
+      "tile_height": 3040,
+      "first_path": "row_0_col_2.jpg",
+      "second_path": "row_0_col_3.jpg",
+      "note": "manual preview alignment"
+    },
+    {
+      "created_at": 1777070823.2244205,
+      "capture_signature": "a3513a242199935ad0954f3aeeefdc4bc8e5545411289e6a05310c85b6e5b9ff",
+      "scan_profile": {
+        "profile": "standard",
+        "grid": {
+          "rows": 4,
+          "cols": 4
+        },
+        "steps_per_segment": {
+          "x": 43333,
+          "y": 38000
+        },
+        "max_position": {
+          "x": 130000,
+          "y": 120000
+        },
+        "capture_fov_steps": {
+          "x": 60000,
+          "y": 45000
+        },
+        "stitch_stride_px": {
+          "x": 2800,
+          "y": 2568
+        },
+        "stitch_x_axis_reversed": true,
+        "stitch_capture_indexing_mode": "serpentine_scan_order"
+      },
+      "coordinate_space": "physical_grid",
+      "axis": "x",
+      "row": 0,
+      "col": 1,
+      "neighbor_row": 0,
+      "neighbor_col": 2,
+      "dx": -2501,
+      "dy": 0,
+      "first_scan_row": 0,
+      "first_scan_col": 1,
+      "second_scan_row": 0,
+      "second_scan_col": 2,
+      "tile_width": 4056,
+      "tile_height": 3040,
+      "first_path": "row_0_col_1.jpg",
+      "second_path": "row_0_col_2.jpg",
+      "note": "manual preview alignment"
+    },
+    {
+      "created_at": 1777071034.3738165,
+      "capture_signature": "a3513a242199935ad0954f3aeeefdc4bc8e5545411289e6a05310c85b6e5b9ff",
+      "scan_profile": {
+        "profile": "standard",
+        "grid": {
+          "rows": 4,
+          "cols": 4
+        },
+        "steps_per_segment": {
+          "x": 43333,
+          "y": 38000
+        },
+        "max_position": {
+          "x": 130000,
+          "y": 120000
+        },
+        "capture_fov_steps": {
+          "x": 60000,
+          "y": 45000
+        },
+        "stitch_stride_px": {
+          "x": 2800,
+          "y": 2568
+        },
+        "stitch_x_axis_reversed": true,
+        "stitch_capture_indexing_mode": "serpentine_scan_order"
+      },
+      "coordinate_space": "physical_grid",
+      "axis": "x",
+      "row": 1,
+      "col": 0,
+      "neighbor_row": 1,
+      "neighbor_col": 1,
+      "dx": -2535,
+      "dy": 22,
+      "first_scan_row": 1,
+      "first_scan_col": 0,
+      "second_scan_row": 1,
+      "second_scan_col": 1,
+      "tile_width": 4056,
+      "tile_height": 3040,
+      "first_path": "row_1_col_3.jpg",
+      "second_path": "row_1_col_2.jpg",
+      "note": "manual preview alignment"
+    },
+    {
+      "created_at": 1777071080.1758952,
+      "capture_signature": "a3513a242199935ad0954f3aeeefdc4bc8e5545411289e6a05310c85b6e5b9ff",
+      "scan_profile": {
+        "profile": "standard",
+        "grid": {
+          "rows": 4,
+          "cols": 4
+        },
+        "steps_per_segment": {
+          "x": 43333,
+          "y": 38000
+        },
+        "max_position": {
+          "x": 130000,
+          "y": 120000
+        },
+        "capture_fov_steps": {
+          "x": 60000,
+          "y": 45000
+        },
+        "stitch_stride_px": {
+          "x": 2800,
+          "y": 2568
+        },
+        "stitch_x_axis_reversed": true,
+        "stitch_capture_indexing_mode": "serpentine_scan_order"
+      },
+      "coordinate_space": "physical_grid",
+      "axis": "x",
+      "row": 1,
+      "col": 1,
+      "neighbor_row": 1,
+      "neighbor_col": 2,
+      "dx": -2720,
+      "dy": 17,
+      "first_scan_row": 1,
+      "first_scan_col": 1,
+      "second_scan_row": 1,
+      "second_scan_col": 2,
+      "tile_width": 4056,
+      "tile_height": 3040,
+      "first_path": "row_1_col_2.jpg",
+      "second_path": "row_1_col_1.jpg",
+      "note": "manual preview alignment"
+    },
+    {
+      "created_at": 1777071107.7934997,
+      "capture_signature": "a3513a242199935ad0954f3aeeefdc4bc8e5545411289e6a05310c85b6e5b9ff",
+      "scan_profile": {
+        "profile": "standard",
+        "grid": {
+          "rows": 4,
+          "cols": 4
+        },
+        "steps_per_segment": {
+          "x": 43333,
+          "y": 38000
+        },
+        "max_position": {
+          "x": 130000,
+          "y": 120000
+        },
+        "capture_fov_steps": {
+          "x": 60000,
+          "y": 45000
+        },
+        "stitch_stride_px": {
+          "x": 2800,
+          "y": 2568
+        },
+        "stitch_x_axis_reversed": true,
+        "stitch_capture_indexing_mode": "serpentine_scan_order"
+      },
+      "coordinate_space": "physical_grid",
+      "axis": "x",
+      "row": 1,
+      "col": 2,
+      "neighbor_row": 1,
+      "neighbor_col": 3,
+      "dx": -2620,
+      "dy": -10,
+      "first_scan_row": 1,
+      "first_scan_col": 2,
+      "second_scan_row": 1,
+      "second_scan_col": 3,
+      "tile_width": 4056,
+      "tile_height": 3040,
+      "first_path": "row_1_col_1.jpg",
+      "second_path": "row_1_col_0.jpg",
+      "note": "manual preview alignment"
+    },
+    {
+      "created_at": 1777071231.3187547,
+      "capture_signature": "a3513a242199935ad0954f3aeeefdc4bc8e5545411289e6a05310c85b6e5b9ff",
+      "scan_profile": {
+        "profile": "standard",
+        "grid": {
+          "rows": 4,
+          "cols": 4
+        },
+        "steps_per_segment": {
+          "x": 43333,
+          "y": 38000
+        },
+        "max_position": {
+          "x": 130000,
+          "y": 120000
+        },
+        "capture_fov_steps": {
+          "x": 60000,
+          "y": 45000
+        },
+        "stitch_stride_px": {
+          "x": 2800,
+          "y": 2568
+        },
+        "stitch_x_axis_reversed": true,
+        "stitch_capture_indexing_mode": "serpentine_scan_order"
+      },
+      "coordinate_space": "physical_grid",
+      "axis": "x",
+      "row": 2,
+      "col": 0,
+      "neighbor_row": 2,
+      "neighbor_col": 1,
+      "dx": -2290,
+      "dy": 90,
+      "first_scan_row": 2,
+      "first_scan_col": 0,
+      "second_scan_row": 2,
+      "second_scan_col": 1,
+      "tile_width": 4056,
+      "tile_height": 3040,
+      "first_path": "row_2_col_0.jpg",
+      "second_path": "row_2_col_1.jpg",
+      "note": "manual preview alignment"
+    },
+    {
+      "created_at": 1777071253.0776145,
+      "capture_signature": "a3513a242199935ad0954f3aeeefdc4bc8e5545411289e6a05310c85b6e5b9ff",
+      "scan_profile": {
+        "profile": "standard",
+        "grid": {
+          "rows": 4,
+          "cols": 4
+        },
+        "steps_per_segment": {
+          "x": 43333,
+          "y": 38000
+        },
+        "max_position": {
+          "x": 130000,
+          "y": 120000
+        },
+        "capture_fov_steps": {
+          "x": 60000,
+          "y": 45000
+        },
+        "stitch_stride_px": {
+          "x": 2800,
+          "y": 2568
+        },
+        "stitch_x_axis_reversed": true,
+        "stitch_capture_indexing_mode": "serpentine_scan_order"
+      },
+      "coordinate_space": "physical_grid",
+      "axis": "x",
+      "row": 2,
+      "col": 1,
+      "neighbor_row": 2,
+      "neighbor_col": 2,
+      "dx": -2690,
+      "dy": -10,
+      "first_scan_row": 2,
+      "first_scan_col": 1,
+      "second_scan_row": 2,
+      "second_scan_col": 2,
+      "tile_width": 4056,
+      "tile_height": 3040,
+      "first_path": "row_2_col_1.jpg",
+      "second_path": "row_2_col_2.jpg",
+      "note": "manual preview alignment"
+    },
+    {
+      "created_at": 1777071279.6994033,
+      "capture_signature": "a3513a242199935ad0954f3aeeefdc4bc8e5545411289e6a05310c85b6e5b9ff",
+      "scan_profile": {
+        "profile": "standard",
+        "grid": {
+          "rows": 4,
+          "cols": 4
+        },
+        "steps_per_segment": {
+          "x": 43333,
+          "y": 38000
+        },
+        "max_position": {
+          "x": 130000,
+          "y": 120000
+        },
+        "capture_fov_steps": {
+          "x": 60000,
+          "y": 45000
+        },
+        "stitch_stride_px": {
+          "x": 2800,
+          "y": 2568
+        },
+        "stitch_x_axis_reversed": true,
+        "stitch_capture_indexing_mode": "serpentine_scan_order"
+      },
+      "coordinate_space": "physical_grid",
+      "axis": "x",
+      "row": 2,
+      "col": 2,
+      "neighbor_row": 2,
+      "neighbor_col": 3,
+      "dx": -2600,
+      "dy": 0,
+      "first_scan_row": 2,
+      "first_scan_col": 2,
+      "second_scan_row": 2,
+      "second_scan_col": 3,
+      "tile_width": 4056,
+      "tile_height": 3040,
+      "first_path": "row_2_col_2.jpg",
+      "second_path": "row_2_col_3.jpg",
+      "note": "manual preview alignment"
+    },
+    {
+      "created_at": 1777071355.259329,
+      "capture_signature": "a3513a242199935ad0954f3aeeefdc4bc8e5545411289e6a05310c85b6e5b9ff",
+      "scan_profile": {
+        "profile": "standard",
+        "grid": {
+          "rows": 4,
+          "cols": 4
+        },
+        "steps_per_segment": {
+          "x": 43333,
+          "y": 38000
+        },
+        "max_position": {
+          "x": 130000,
+          "y": 120000
+        },
+        "capture_fov_steps": {
+          "x": 60000,
+          "y": 45000
+        },
+        "stitch_stride_px": {
+          "x": 2800,
+          "y": 2568
+        },
+        "stitch_x_axis_reversed": true,
+        "stitch_capture_indexing_mode": "serpentine_scan_order"
+      },
+      "coordinate_space": "physical_grid",
+      "axis": "x",
+      "row": 3,
+      "col": 0,
+      "neighbor_row": 3,
+      "neighbor_col": 1,
+      "dx": -2530,
+      "dy": -30,
+      "first_scan_row": 3,
+      "first_scan_col": 0,
+      "second_scan_row": 3,
+      "second_scan_col": 1,
+      "tile_width": 4056,
+      "tile_height": 3040,
+      "first_path": "row_3_col_3.jpg",
+      "second_path": "row_3_col_2.jpg",
+      "note": "manual preview alignment"
+    },
+    {
+      "created_at": 1777071380.4494705,
+      "capture_signature": "a3513a242199935ad0954f3aeeefdc4bc8e5545411289e6a05310c85b6e5b9ff",
+      "scan_profile": {
+        "profile": "standard",
+        "grid": {
+          "rows": 4,
+          "cols": 4
+        },
+        "steps_per_segment": {
+          "x": 43333,
+          "y": 38000
+        },
+        "max_position": {
+          "x": 130000,
+          "y": 120000
+        },
+        "capture_fov_steps": {
+          "x": 60000,
+          "y": 45000
+        },
+        "stitch_stride_px": {
+          "x": 2800,
+          "y": 2568
+        },
+        "stitch_x_axis_reversed": true,
+        "stitch_capture_indexing_mode": "serpentine_scan_order"
+      },
+      "coordinate_space": "physical_grid",
+      "axis": "x",
+      "row": 3,
+      "col": 1,
+      "neighbor_row": 3,
+      "neighbor_col": 2,
+      "dx": -2660,
+      "dy": 10,
+      "first_scan_row": 3,
+      "first_scan_col": 1,
+      "second_scan_row": 3,
+      "second_scan_col": 2,
+      "tile_width": 4056,
+      "tile_height": 3040,
+      "first_path": "row_3_col_2.jpg",
+      "second_path": "row_3_col_1.jpg",
+      "note": "manual preview alignment"
+    },
+    {
+      "created_at": 1777071471.670403,
+      "capture_signature": "a3513a242199935ad0954f3aeeefdc4bc8e5545411289e6a05310c85b6e5b9ff",
+      "scan_profile": {
+        "profile": "standard",
+        "grid": {
+          "rows": 4,
+          "cols": 4
+        },
+        "steps_per_segment": {
+          "x": 43333,
+          "y": 38000
+        },
+        "max_position": {
+          "x": 130000,
+          "y": 120000
+        },
+        "capture_fov_steps": {
+          "x": 60000,
+          "y": 45000
+        },
+        "stitch_stride_px": {
+          "x": 2800,
+          "y": 2568
+        },
+        "stitch_x_axis_reversed": true,
+        "stitch_capture_indexing_mode": "serpentine_scan_order"
+      },
+      "coordinate_space": "physical_grid",
+      "axis": "x",
+      "row": 3,
+      "col": 2,
+      "neighbor_row": 3,
+      "neighbor_col": 3,
+      "dx": -2590,
+      "dy": -20,
+      "first_scan_row": 3,
+      "first_scan_col": 2,
+      "second_scan_row": 3,
+      "second_scan_col": 3,
+      "tile_width": 4056,
+      "tile_height": 3040,
+      "first_path": "row_3_col_1.jpg",
+      "second_path": "row_3_col_0.jpg",
+      "note": "manual preview alignment"
+    },
+    {
+      "created_at": 1777071604.8377733,
+      "capture_signature": "a3513a242199935ad0954f3aeeefdc4bc8e5545411289e6a05310c85b6e5b9ff",
+      "scan_profile": {
+        "profile": "standard",
+        "grid": {
+          "rows": 4,
+          "cols": 4
+        },
+        "steps_per_segment": {
+          "x": 43333,
+          "y": 38000
+        },
+        "max_position": {
+          "x": 130000,
+          "y": 120000
+        },
+        "capture_fov_steps": {
+          "x": 60000,
+          "y": 45000
+        },
+        "stitch_stride_px": {
+          "x": 2800,
+          "y": 2568
+        },
+        "stitch_x_axis_reversed": true,
+        "stitch_capture_indexing_mode": "serpentine_scan_order"
+      },
+      "coordinate_space": "physical_grid",
+      "axis": "y",
+      "row": 0,
+      "col": 0,
+      "neighbor_row": 1,
+      "neighbor_col": 0,
+      "dx": 0,
+      "dy": 2310,
+      "first_scan_row": 0,
+      "first_scan_col": 0,
+      "second_scan_row": 1,
+      "second_scan_col": 0,
+      "tile_width": 4056,
+      "tile_height": 3040,
+      "first_path": "row_0_col_0.jpg",
+      "second_path": "row_1_col_3.jpg",
+      "note": "manual preview alignment"
+    },
+    {
+      "created_at": 1777071760.7720008,
+      "capture_signature": "a3513a242199935ad0954f3aeeefdc4bc8e5545411289e6a05310c85b6e5b9ff",
+      "scan_profile": {
+        "profile": "standard",
+        "grid": {
+          "rows": 4,
+          "cols": 4
+        },
+        "steps_per_segment": {
+          "x": 43333,
+          "y": 38000
+        },
+        "max_position": {
+          "x": 130000,
+          "y": 120000
+        },
+        "capture_fov_steps": {
+          "x": 60000,
+          "y": 45000
+        },
+        "stitch_stride_px": {
+          "x": 2800,
+          "y": 2568
+        },
+        "stitch_x_axis_reversed": true,
+        "stitch_capture_indexing_mode": "serpentine_scan_order"
+      },
+      "coordinate_space": "physical_grid",
+      "axis": "y",
+      "row": 0,
+      "col": 1,
+      "neighbor_row": 1,
+      "neighbor_col": 1,
+      "dx": 0,
+      "dy": 2220,
+      "first_scan_row": 0,
+      "first_scan_col": 1,
+      "second_scan_row": 1,
+      "second_scan_col": 1,
+      "tile_width": 4056,
+      "tile_height": 3040,
+      "first_path": "row_0_col_1.jpg",
+      "second_path": "row_1_col_2.jpg",
+      "note": "manual preview alignment"
+    },
+    {
+      "created_at": 1777071796.654047,
+      "capture_signature": "a3513a242199935ad0954f3aeeefdc4bc8e5545411289e6a05310c85b6e5b9ff",
+      "scan_profile": {
+        "profile": "standard",
+        "grid": {
+          "rows": 4,
+          "cols": 4
+        },
+        "steps_per_segment": {
+          "x": 43333,
+          "y": 38000
+        },
+        "max_position": {
+          "x": 130000,
+          "y": 120000
+        },
+        "capture_fov_steps": {
+          "x": 60000,
+          "y": 45000
+        },
+        "stitch_stride_px": {
+          "x": 2800,
+          "y": 2568
+        },
+        "stitch_x_axis_reversed": true,
+        "stitch_capture_indexing_mode": "serpentine_scan_order"
+      },
+      "coordinate_space": "physical_grid",
+      "axis": "y",
+      "row": 0,
+      "col": 2,
+      "neighbor_row": 1,
+      "neighbor_col": 2,
+      "dx": -10,
+      "dy": 2290,
+      "first_scan_row": 0,
+      "first_scan_col": 2,
+      "second_scan_row": 1,
+      "second_scan_col": 2,
+      "tile_width": 4056,
+      "tile_height": 3040,
+      "first_path": "row_0_col_2.jpg",
+      "second_path": "row_1_col_1.jpg",
+      "note": "manual preview alignment"
+    },
+    {
+      "created_at": 1777071836.043191,
+      "capture_signature": "a3513a242199935ad0954f3aeeefdc4bc8e5545411289e6a05310c85b6e5b9ff",
+      "scan_profile": {
+        "profile": "standard",
+        "grid": {
+          "rows": 4,
+          "cols": 4
+        },
+        "steps_per_segment": {
+          "x": 43333,
+          "y": 38000
+        },
+        "max_position": {
+          "x": 130000,
+          "y": 120000
+        },
+        "capture_fov_steps": {
+          "x": 60000,
+          "y": 45000
+        },
+        "stitch_stride_px": {
+          "x": 2800,
+          "y": 2568
+        },
+        "stitch_x_axis_reversed": true,
+        "stitch_capture_indexing_mode": "serpentine_scan_order"
+      },
+      "coordinate_space": "physical_grid",
+      "axis": "y",
+      "row": 0,
+      "col": 3,
+      "neighbor_row": 1,
+      "neighbor_col": 3,
+      "dx": -50,
+      "dy": 2330,
+      "first_scan_row": 0,
+      "first_scan_col": 3,
+      "second_scan_row": 1,
+      "second_scan_col": 3,
+      "tile_width": 4056,
+      "tile_height": 3040,
+      "first_path": "row_0_col_3.jpg",
+      "second_path": "row_1_col_0.jpg",
+      "note": "manual preview alignment"
+    },
+    {
+      "created_at": 1777071885.4860759,
+      "capture_signature": "a3513a242199935ad0954f3aeeefdc4bc8e5545411289e6a05310c85b6e5b9ff",
+      "scan_profile": {
+        "profile": "standard",
+        "grid": {
+          "rows": 4,
+          "cols": 4
+        },
+        "steps_per_segment": {
+          "x": 43333,
+          "y": 38000
+        },
+        "max_position": {
+          "x": 130000,
+          "y": 120000
+        },
+        "capture_fov_steps": {
+          "x": 60000,
+          "y": 45000
+        },
+        "stitch_stride_px": {
+          "x": 2800,
+          "y": 2568
+        },
+        "stitch_x_axis_reversed": true,
+        "stitch_capture_indexing_mode": "serpentine_scan_order"
+      },
+      "coordinate_space": "physical_grid",
+      "axis": "y",
+      "row": 1,
+      "col": 0,
+      "neighbor_row": 2,
+      "neighbor_col": 0,
+      "dx": -30,
+      "dy": 2290,
+      "first_scan_row": 1,
+      "first_scan_col": 0,
+      "second_scan_row": 2,
+      "second_scan_col": 0,
+      "tile_width": 4056,
+      "tile_height": 3040,
+      "first_path": "row_1_col_3.jpg",
+      "second_path": "row_2_col_0.jpg",
+      "note": "manual preview alignment"
+    },
+    {
+      "created_at": 1777071908.746741,
+      "capture_signature": "a3513a242199935ad0954f3aeeefdc4bc8e5545411289e6a05310c85b6e5b9ff",
+      "scan_profile": {
+        "profile": "standard",
+        "grid": {
+          "rows": 4,
+          "cols": 4
+        },
+        "steps_per_segment": {
+          "x": 43333,
+          "y": 38000
+        },
+        "max_position": {
+          "x": 130000,
+          "y": 120000
+        },
+        "capture_fov_steps": {
+          "x": 60000,
+          "y": 45000
+        },
+        "stitch_stride_px": {
+          "x": 2800,
+          "y": 2568
+        },
+        "stitch_x_axis_reversed": true,
+        "stitch_capture_indexing_mode": "serpentine_scan_order"
+      },
+      "coordinate_space": "physical_grid",
+      "axis": "y",
+      "row": 1,
+      "col": 1,
+      "neighbor_row": 2,
+      "neighbor_col": 1,
+      "dx": -50,
+      "dy": 2330,
+      "first_scan_row": 1,
+      "first_scan_col": 1,
+      "second_scan_row": 2,
+      "second_scan_col": 1,
+      "tile_width": 4056,
+      "tile_height": 3040,
+      "first_path": "row_1_col_2.jpg",
+      "second_path": "row_2_col_1.jpg",
+      "note": "manual preview alignment"
+    },
+    {
+      "created_at": 1777071923.1016138,
+      "capture_signature": "a3513a242199935ad0954f3aeeefdc4bc8e5545411289e6a05310c85b6e5b9ff",
+      "scan_profile": {
+        "profile": "standard",
+        "grid": {
+          "rows": 4,
+          "cols": 4
+        },
+        "steps_per_segment": {
+          "x": 43333,
+          "y": 38000
+        },
+        "max_position": {
+          "x": 130000,
+          "y": 120000
+        },
+        "capture_fov_steps": {
+          "x": 60000,
+          "y": 45000
+        },
+        "stitch_stride_px": {
+          "x": 2800,
+          "y": 2568
+        },
+        "stitch_x_axis_reversed": true,
+        "stitch_capture_indexing_mode": "serpentine_scan_order"
+      },
+      "coordinate_space": "physical_grid",
+      "axis": "y",
+      "row": 1,
+      "col": 2,
+      "neighbor_row": 2,
+      "neighbor_col": 2,
+      "dx": 0,
+      "dy": 2310,
+      "first_scan_row": 1,
+      "first_scan_col": 2,
+      "second_scan_row": 2,
+      "second_scan_col": 2,
+      "tile_width": 4056,
+      "tile_height": 3040,
+      "first_path": "row_1_col_1.jpg",
+      "second_path": "row_2_col_2.jpg",
+      "note": "manual preview alignment"
+    },
+    {
+      "created_at": 1777071939.5056386,
+      "capture_signature": "a3513a242199935ad0954f3aeeefdc4bc8e5545411289e6a05310c85b6e5b9ff",
+      "scan_profile": {
+        "profile": "standard",
+        "grid": {
+          "rows": 4,
+          "cols": 4
+        },
+        "steps_per_segment": {
+          "x": 43333,
+          "y": 38000
+        },
+        "max_position": {
+          "x": 130000,
+          "y": 120000
+        },
+        "capture_fov_steps": {
+          "x": 60000,
+          "y": 45000
+        },
+        "stitch_stride_px": {
+          "x": 2800,
+          "y": 2568
+        },
+        "stitch_x_axis_reversed": true,
+        "stitch_capture_indexing_mode": "serpentine_scan_order"
+      },
+      "coordinate_space": "physical_grid",
+      "axis": "y",
+      "row": 1,
+      "col": 3,
+      "neighbor_row": 2,
+      "neighbor_col": 3,
+      "dx": -10,
+      "dy": 2340,
+      "first_scan_row": 1,
+      "first_scan_col": 3,
+      "second_scan_row": 2,
+      "second_scan_col": 3,
+      "tile_width": 4056,
+      "tile_height": 3040,
+      "first_path": "row_1_col_0.jpg",
+      "second_path": "row_2_col_3.jpg",
+      "note": "manual preview alignment"
+    },
+    {
+      "created_at": 1777072006.8446326,
+      "capture_signature": "a3513a242199935ad0954f3aeeefdc4bc8e5545411289e6a05310c85b6e5b9ff",
+      "scan_profile": {
+        "profile": "standard",
+        "grid": {
+          "rows": 4,
+          "cols": 4
+        },
+        "steps_per_segment": {
+          "x": 43333,
+          "y": 38000
+        },
+        "max_position": {
+          "x": 130000,
+          "y": 120000
+        },
+        "capture_fov_steps": {
+          "x": 60000,
+          "y": 45000
+        },
+        "stitch_stride_px": {
+          "x": 2800,
+          "y": 2568
+        },
+        "stitch_x_axis_reversed": true,
+        "stitch_capture_indexing_mode": "serpentine_scan_order"
+      },
+      "coordinate_space": "physical_grid",
+      "axis": "y",
+      "row": 2,
+      "col": 0,
+      "neighbor_row": 3,
+      "neighbor_col": 0,
+      "dx": -27,
+      "dy": 2390,
+      "first_scan_row": 2,
+      "first_scan_col": 0,
+      "second_scan_row": 3,
+      "second_scan_col": 0,
+      "tile_width": 4056,
+      "tile_height": 3040,
+      "first_path": "row_2_col_0.jpg",
+      "second_path": "row_3_col_3.jpg",
+      "note": "manual preview alignment"
+    },
+    {
+      "created_at": 1777072035.4603405,
+      "capture_signature": "a3513a242199935ad0954f3aeeefdc4bc8e5545411289e6a05310c85b6e5b9ff",
+      "scan_profile": {
+        "profile": "standard",
+        "grid": {
+          "rows": 4,
+          "cols": 4
+        },
+        "steps_per_segment": {
+          "x": 43333,
+          "y": 38000
+        },
+        "max_position": {
+          "x": 130000,
+          "y": 120000
+        },
+        "capture_fov_steps": {
+          "x": 60000,
+          "y": 45000
+        },
+        "stitch_stride_px": {
+          "x": 2800,
+          "y": 2568
+        },
+        "stitch_x_axis_reversed": true,
+        "stitch_capture_indexing_mode": "serpentine_scan_order"
+      },
+      "coordinate_space": "physical_grid",
+      "axis": "y",
+      "row": 2,
+      "col": 1,
+      "neighbor_row": 3,
+      "neighbor_col": 1,
+      "dx": -5,
+      "dy": 2240,
+      "first_scan_row": 2,
+      "first_scan_col": 1,
+      "second_scan_row": 3,
+      "second_scan_col": 1,
+      "tile_width": 4056,
+      "tile_height": 3040,
+      "first_path": "row_2_col_1.jpg",
+      "second_path": "row_3_col_2.jpg",
+      "note": "manual preview alignment"
+    },
+    {
+      "created_at": 1777072067.422004,
+      "capture_signature": "a3513a242199935ad0954f3aeeefdc4bc8e5545411289e6a05310c85b6e5b9ff",
+      "scan_profile": {
+        "profile": "standard",
+        "grid": {
+          "rows": 4,
+          "cols": 4
+        },
+        "steps_per_segment": {
+          "x": 43333,
+          "y": 38000
+        },
+        "max_position": {
+          "x": 130000,
+          "y": 120000
+        },
+        "capture_fov_steps": {
+          "x": 60000,
+          "y": 45000
+        },
+        "stitch_stride_px": {
+          "x": 2800,
+          "y": 2568
+        },
+        "stitch_x_axis_reversed": true,
+        "stitch_capture_indexing_mode": "serpentine_scan_order"
+      },
+      "coordinate_space": "physical_grid",
+      "axis": "y",
+      "row": 2,
+      "col": 2,
+      "neighbor_row": 3,
+      "neighbor_col": 2,
+      "dx": -28,
+      "dy": 2290,
+      "first_scan_row": 2,
+      "first_scan_col": 2,
+      "second_scan_row": 3,
+      "second_scan_col": 2,
+      "tile_width": 4056,
+      "tile_height": 3040,
+      "first_path": "row_2_col_2.jpg",
+      "second_path": "row_3_col_1.jpg",
+      "note": "manual preview alignment"
+    },
+    {
+      "created_at": 1777072151.5092087,
+      "capture_signature": "a3513a242199935ad0954f3aeeefdc4bc8e5545411289e6a05310c85b6e5b9ff",
+      "scan_profile": {
+        "profile": "standard",
+        "grid": {
+          "rows": 4,
+          "cols": 4
+        },
+        "steps_per_segment": {
+          "x": 43333,
+          "y": 38000
+        },
+        "max_position": {
+          "x": 130000,
+          "y": 120000
+        },
+        "capture_fov_steps": {
+          "x": 60000,
+          "y": 45000
+        },
+        "stitch_stride_px": {
+          "x": 2800,
+          "y": 2568
+        },
+        "stitch_x_axis_reversed": true,
+        "stitch_capture_indexing_mode": "serpentine_scan_order"
+      },
+      "coordinate_space": "physical_grid",
+      "axis": "y",
+      "row": 2,
+      "col": 3,
+      "neighbor_row": 3,
+      "neighbor_col": 3,
+      "dx": -32,
+      "dy": 2309,
+      "first_scan_row": 2,
+      "first_scan_col": 3,
+      "second_scan_row": 3,
+      "second_scan_col": 3,
+      "tile_width": 4056,
+      "tile_height": 3040,
+      "first_path": "row_2_col_3.jpg",
+      "second_path": "row_3_col_0.jpg",
+      "note": "manual preview alignment"
+    }
+  ]
+}

@@ -1,0 +1,92 @@
+{
+  "checkpoints": [
+    {
+      "created_at": 1777009174.8365147,
+      "label": "boundary check",
+      "note": "x-limit-rightmost-point",
+      "x": 130000,
+      "y": 0,
+      "scan_profile": {
+        "profile": "standard",
+        "grid": {
+          "rows": 4,
+          "cols": 6
+        },
+        "steps_per_segment": {
+          "x": 15000,
+          "y": 20000
+        },
+        "max_position": {
+          "x": 75000,
+          "y": 60000
+        }
+      }
+    },
+    {
+      "created_at": 1777009625.6425226,
+      "label": "boundary check",
+      "note": "y-limit-downmost-point",
+      "x": 0,
+      "y": 120000,
+      "scan_profile": {
+        "profile": "standard",
+        "grid": {
+          "rows": 4,
+          "cols": 6
+        },
+        "steps_per_segment": {
+          "x": 15000,
+          "y": 20000
+        },
+        "max_position": {
+          "x": 75000,
+          "y": 60000
+        }
+      }
+    },
+    {
+      "created_at": 1777009686.8825252,
+      "label": "boundary check",
+      "note": "cropsizecheck-left-top-cornor",
+      "x": 0,
+      "y": 0,
+      "scan_profile": {
+        "profile": "standard",
+        "grid": {
+          "rows": 4,
+          "cols": 6
+        },
+        "steps_per_segment": {
+          "x": 15000,
+          "y": 20000
+        },
+        "max_position": {
+          "x": 75000,
+          "y": 60000
+        }
+      }
+    },
+    {
+      "created_at": 1777010062.9989111,
+      "label": "boundary check",
+      "note": "cropsizecheck-right-bottom-cornor",
+      "x": 60000,
+      "y": 45000,
+      "scan_profile": {
+        "profile": "standard",
+        "grid": {
+          "rows": 4,
+          "cols": 6
+        },
+        "steps_per_segment": {
+          "x": 15000,
+          "y": 20000
+        },
+        "max_position": {
+          "x": 75000,
+          "y": 60000
+        }
+      }
+    }
+  ]
+}
