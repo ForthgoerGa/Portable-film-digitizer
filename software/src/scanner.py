@@ -323,7 +323,15 @@ class Scanner:
         stem = f"row_{row}_col_{col}"
         raw_filename = CAPTURES_DIR / f"{stem}{CAPTURE_EXTENSION}"
         preview_filename = CAPTURES_DIR / f"{stem}{PREVIEW_EXTENSION}"
+        self.capture_to_files(raw_filename, preview_filename)
+        print(f"Captured {raw_filename} and {preview_filename}")
 
+    def capture_to_files(self, raw_filename: Path, preview_filename: Path) -> None:
+        """Capture one fixed-control RAW DNG plus one browser preview JPEG."""
+        if not self.camera_available:
+            raise RuntimeError("Camera not available")
+        raw_filename.parent.mkdir(parents=True, exist_ok=True)
+        preview_filename.parent.mkdir(parents=True, exist_ok=True)
         request = self.camera.capture_request()
         try:
             if RAW_CAPTURE_ENABLED:
@@ -331,8 +339,6 @@ class Scanner:
             request.save("main", str(preview_filename))
         finally:
             request.release()
-
-        print(f"Captured {raw_filename} and {preview_filename}")
 
     def capture_preview(self, preview_filename: Path) -> None:
         """Capture one display preview frame without writing RAW data."""

@@ -2,15 +2,20 @@
 
 from __future__ import annotations
 
+import os
 import shutil
+import socket
 import sys
 import threading
 import time
 import uuid
 from pathlib import Path
+from urllib.parse import urlparse
 
 import cv2
 import numpy as np
+
+import calibration_store
 
 try:
     import requests as _req
@@ -19,7 +24,7 @@ try:
 except ImportError:
     _HAS_REQUESTS = False
 
-_TRANSFER_TIMEOUT_S = 90.0
+_TRANSFER_TIMEOUT_S = 180.0
 _WAIT_SLICE_S = 0.25
 _JPEG_QUALITY = 92
 _REPO_ROOT = Path(__file__).resolve().parent.parent
@@ -44,11 +49,14 @@ def _new_job(job_id: str, job_kind: str) -> dict:
         "processing": {
             "classification": None,
             "classifier_raw_label": None,
+            "classifier_mode": None,
             "selected_branch": None,
             "runner_used": None,
             "current_iteration": None,
             "max_iterations": None,
             "score": None,
+            "calibration_skip_reason": None,
+            "missing_calibrations": None,
         },
         "artifacts": {
             "stitched_raw_dng_url": None,
@@ -56,6 +64,7 @@ def _new_job(job_id: str, job_kind: str) -> dict:
             "final_preview_url": None,
             "final_download_url": None,
             "metadata_url": None,
+            "backlight_reference_url": None,
         },
         # Internal fields stripped from the public job model.
         "_cancel": False,
@@ -65,12 +74,19 @@ def _new_job(job_id: str, job_kind: str) -> dict:
 
 
 class JobOrchestrator:
-    def __init__(self, artifacts_dir: Path, pi_scanner_url: str = "http://10.12.194.1:5000"):
+    def __init__(
+        self,
+        artifacts_dir: Path,
+        pi_scanner_url: str = "http://10.12.194.1:5000",
+        pc_app_url: str | None = None,
+    ):
         self._jobs: dict[str, dict] = {}
         self._lock = threading.Lock()
         self.artifacts_dir = artifacts_dir
         self.artifacts_dir.mkdir(parents=True, exist_ok=True)
         self._pi_url = pi_scanner_url.rstrip("/")
+        self._configured_pc_app_url = (pc_app_url or os.getenv("PC_APP_URL") or "").rstrip("/")
+        self._pc_app_url = self._configured_pc_app_url or self._detect_pc_app_url()
 
     # Public API -----------------------------------------------------------------
 
@@ -78,6 +94,8 @@ class JobOrchestrator:
         job_id = uuid.uuid4().hex[:12]
         job = _new_job(job_id, job_kind)
         job["_source_path"] = str(source_path) if source_path else None
+        if calibration_store.get_dng_path_if_ready(calibration_store.BACKLIGHT) is not None:
+            job["artifacts"]["backlight_reference_url"] = calibration_store.BACKLIGHT_ARTIFACT_URL
         (self.artifacts_dir / job_id).mkdir(parents=True, exist_ok=True)
         with self._lock:
             self._jobs[job_id] = job
@@ -122,25 +140,22 @@ class JobOrchestrator:
 
     def receive_stitched_raw(self, job_id: str, data: bytes) -> tuple[bool, str]:
         """Persist canonical stitched raw and release any waiting transfer stage."""
-        with self._lock:
-            job = self._jobs.get(job_id)
-            if not job:
-                return False, "not_found"
-            if job.get("job_kind") != "one_click_scan":
-                return False, "receive_stitched_raw only applies to one_click_scan jobs"
-            if job.get("state") != "running":
-                return False, "Job is not running"
-            if job.get("stage") not in {"scan", "stitch", "transfer"}:
-                return False, f"Job is not ready for stitched raw upload (stage={job.get('stage')})"
-
-        job_dir = self.artifacts_dir / job_id
-        if not job_dir.exists():
-            return False, "not_found"
+        job_dir, reason = self._validate_stitched_raw_receive(job_id)
+        if job_dir is None:
+            return False, reason
 
         tmp_path = job_dir / "stitched_raw.uploading"
+        tmp_path.write_bytes(data)
+        return self.receive_stitched_raw_file(job_id, tmp_path)
+
+    def receive_stitched_raw_file(self, job_id: str, tmp_path: Path) -> tuple[bool, str]:
+        """Accept a staged upload file without loading the DNG into memory."""
+        job_dir, reason = self._validate_stitched_raw_receive(job_id)
+        if job_dir is None:
+            return False, reason
+
         final_path = job_dir / "stitched_raw.dng"
         preview_path = job_dir / "raw_preview.jpg"
-        tmp_path.write_bytes(data)
         tmp_path.replace(final_path)
         if preview_path.exists():
             preview_path.unlink()
@@ -157,6 +172,23 @@ class JobOrchestrator:
         if event:
             event.set()
         return True, "accepted"
+
+    def _validate_stitched_raw_receive(self, job_id: str) -> tuple[Path | None, str]:
+        with self._lock:
+            job = self._jobs.get(job_id)
+            if not job:
+                return None, "not_found"
+            if job.get("job_kind") != "one_click_scan":
+                return None, "receive_stitched_raw only applies to one_click_scan jobs"
+            if job.get("state") != "running":
+                return None, "Job is not running"
+            if job.get("stage") not in {"scan", "stitch", "transfer"}:
+                return None, f"Job is not ready for stitched raw upload (stage={job.get('stage')})"
+
+        job_dir = self.artifacts_dir / job_id
+        if not job_dir.exists():
+            return None, "not_found"
+        return job_dir, "ok"
 
     # Internal helpers -----------------------------------------------------------
 
@@ -251,16 +283,56 @@ class JobOrchestrator:
         rgb = cv2.cvtColor(raster, cv2.COLOR_BGR2RGB).astype(np.float32) / 255.0
         self._save_jpeg_preview(rgb, preview_path)
 
+    def _fetch_pi_stitched_preview(self, preview_path: Path) -> bool:
+        """Fetch the Pi-side stitched JPG preview when it is available.
+
+        Phase 1 processing is preview-raster based while the stitched DNG is
+        kept as the canonical artifact. The Pi preview is generated from the
+        same scan tiles with the camera ISP color path, so it is currently a
+        more truthful browser preview than ad-hoc PC color conversion of the
+        stitched Bayer DNG.
+        """
+        if not _HAS_REQUESTS:
+            return False
+
+        tmp_path = preview_path.with_suffix(preview_path.suffix + ".fetching")
+        try:
+            with _req.get(
+                f"{self._pi_url}/captures/file",
+                params={"path": "stitched_preview.jpg"},
+                stream=True,
+                timeout=(3, 30),
+            ) as resp:
+                resp.raise_for_status()
+                with tmp_path.open("wb") as fh:
+                    for chunk in resp.iter_content(chunk_size=1024 * 1024):
+                        if chunk:
+                            fh.write(chunk)
+
+            if cv2.imread(str(tmp_path), cv2.IMREAD_COLOR) is None:
+                tmp_path.unlink(missing_ok=True)
+                return False
+            tmp_path.replace(preview_path)
+            return True
+        except Exception:
+            tmp_path.unlink(missing_ok=True)
+            return False
+
     def _derive_preview_from_dng(self, canonical_path: Path, preview_path: Path):
         from Agentic_Post_Processing.raw_pipeline.raw_ingest import load_raw_frame
-        from Agentic_Post_Processing.raw_pipeline.sensor_normalization import prepare_linear_rgb
 
         raw_frame = load_raw_frame(str(canonical_path))
-        linear_rgb = prepare_linear_rgb(raw_frame)
-        linear_rgb = np.clip(linear_rgb.astype(np.float32), 0.0, 1.0)
+        # load_raw_frame has already let rawpy subtract black, normalize white,
+        # demosaic, and produce an RGB buffer. Do not call prepare_linear_rgb()
+        # here; that would subtract native black level a second time and can
+        # create the false-color preview seen on stitched multi-tile DNGs.
+        linear_rgb = np.clip(raw_frame.linear_rgb.astype(np.float32), 0.0, 1.0)
 
-        lo = float(np.percentile(linear_rgb, 1.0))
-        hi = float(np.percentile(linear_rgb, 99.5))
+        luma = 0.2126 * linear_rgb[..., 0] + 0.7152 * linear_rgb[..., 1] + 0.0722 * linear_rgb[..., 2]
+        valid = luma[(luma > 0.002) & (luma < 0.995)]
+        stretch_source = valid if valid.size > 100 else luma.reshape(-1)
+        lo = float(np.percentile(stretch_source, 0.5))
+        hi = float(np.percentile(stretch_source, 99.5))
         scale = max(hi - lo, 1e-6)
         preview = np.clip((linear_rgb - lo) / scale, 0.0, 1.0)
         preview = np.power(preview, 1.0 / 2.2)
@@ -280,7 +352,8 @@ class JobOrchestrator:
             return (canonical_path if canonical_path.exists() else None), preview_path
 
         if canonical_path.exists():
-            self._derive_preview_from_dng(canonical_path, preview_path)
+            if not self._fetch_pi_stitched_preview(preview_path):
+                self._derive_preview_from_dng(canonical_path, preview_path)
             self._set_raw_preview(job_id)
             return canonical_path, preview_path
 
@@ -328,8 +401,13 @@ class JobOrchestrator:
             return False
 
         self._up(job_id, stage="dispatch", progress_pct=2)
+        payload = {"format": "35mm", "job_id": job_id}
+        pc_app_url = self._current_pc_app_url()
+        if pc_app_url:
+            payload["pc_base_url"] = pc_app_url
+            payload["upload_url"] = f"{pc_app_url}/internal/jobs/{job_id}/receive_stitched_raw"
         try:
-            resp = _req.post(f"{self._pi_url}/scan/start", json={"format": "35mm"}, timeout=5)
+            resp = _req.post(f"{self._pi_url}/scan/start", json=payload, timeout=5)
             resp.raise_for_status()
         except Exception as exc:
             self._fail(job_id, f"Pi scanner unreachable: {exc}")
@@ -368,8 +446,12 @@ class JobOrchestrator:
                         "cols": status.get("total_cols", 0),
                     },
                 )
-            elif pi_state == "returning_home":
+            elif pi_state == "stitching":
                 self._up(job_id, stage="stitch", progress_pct=65)
+            elif pi_state == "uploading":
+                self._up(job_id, stage="transfer", progress_pct=70)
+            elif pi_state == "returning_home":
+                self._up(job_id, stage="transfer", progress_pct=72)
             elif pi_state == "idle":
                 self._up(job_id, stage="transfer", progress_pct=70)
                 return self._wait_for_stitched_upload(job_id)
@@ -379,22 +461,55 @@ class JobOrchestrator:
 
             time.sleep(1)
 
+    def _detect_pc_app_url(self) -> str:
+        """Best-effort PC URL for the Pi upload callback."""
+        port = int(os.getenv("PC_APP_PORT", "8000"))
+        parsed = urlparse(self._pi_url)
+        pi_host = parsed.hostname
+        if not pi_host:
+            return ""
+        try:
+            with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as sock:
+                sock.connect((pi_host, 80))
+                local_ip = sock.getsockname()[0]
+        except OSError:
+            return ""
+        return f"http://{local_ip}:{port}"
+
+    def _current_pc_app_url(self) -> str:
+        """Return a Pi-reachable PC callback URL.
+
+        The PC address can change when switching hotspot/Ethernet adapters, so
+        avoid using a stale auto-detected URL from server startup. An explicit
+        PC_APP_URL still wins for controlled deployments.
+        """
+        if self._configured_pc_app_url:
+            self._pc_app_url = self._configured_pc_app_url
+        else:
+            detected = self._detect_pc_app_url()
+            if detected:
+                self._pc_app_url = detected
+        return self._pc_app_url
+
     def _process(self, job_id: str):
         from processing_adapter import ProcessingAdapter
 
         canonical_source, preview_source = self._ensure_processing_inputs(job_id)
-        self._up(job_id, stage="classify", progress_pct=80)
+        self._up(job_id, stage="classify", progress_pct=78)
 
         def progress_cb(info: dict):
             processing_update: dict = {}
             for src_key, dst_key in (
                 ("classification", "classification"),
                 ("classifier_raw_label", "classifier_raw_label"),
+                ("classifier_mode", "classifier_mode"),
                 ("selected_branch", "selected_branch"),
                 ("runner_used", "runner_used"),
                 ("iteration", "current_iteration"),
                 ("max_iter", "max_iterations"),
                 ("score", "score"),
+                ("calibration_skip_reason", "calibration_skip_reason"),
+                ("missing_calibrations", "missing_calibrations"),
             ):
                 if src_key in info:
                     processing_update[dst_key] = info[src_key]
@@ -443,8 +558,11 @@ class JobOrchestrator:
             processing={
                 "classification": result.get("classification"),
                 "classifier_raw_label": result.get("classifier_raw_label"),
+                "classifier_mode": result.get("classifier_mode"),
                 "selected_branch": result.get("selected_branch"),
                 "runner_used": result.get("runner_used"),
                 "score": result.get("score"),
+                "calibration_skip_reason": result.get("calibration_skip_reason"),
+                "missing_calibrations": result.get("missing_calibrations"),
             },
         )

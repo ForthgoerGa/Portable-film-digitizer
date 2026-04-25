@@ -13,8 +13,11 @@ import uuid
 from enum import Enum
 from pathlib import Path
 from typing import Dict, Any, Optional
-from urllib import request as urlrequest
-from urllib.error import URLError, HTTPError
+
+try:
+    import requests as _requests
+except ImportError:  # pragma: no cover - Pi runtime should provide requests
+    _requests = None
 
 try:
     from .scanner import Scanner
@@ -36,6 +39,11 @@ except ImportError:
         Y_STEPS_PER_SEG,
         CAPTURES_DIR,
     )
+
+
+_UPLOAD_TIMEOUT_S = 180
+_UPLOAD_CHUNK_SIZE = 1024 * 1024
+_UPLOAD_LOG_INTERVAL = 16 * 1024 * 1024
 
 
 class ScannerState(Enum):
@@ -144,6 +152,36 @@ class ScannerCoordinator:
 
             return status
 
+    def reset_state(self) -> None:
+        """Clear a terminal scanner state after an error or cancellation.
+
+        This is intentionally conservative: it never moves motors and only
+        succeeds when the scanner is not active, motors are stopped, and both
+        axes are already at the configured home position.
+        """
+        with self._lock:
+            if self.state in (
+                ScannerState.SCANNING,
+                ScannerState.STITCHING,
+                ScannerState.UPLOADING,
+                ScannerState.RETURNING_HOME,
+            ):
+                raise RuntimeError("Cannot reset while scanner is active")
+        if self.scanner.is_any_motor_moving():
+            raise RuntimeError("Cannot reset while motor is moving")
+        x_position, y_position = self.scanner.get_position()
+        if x_position != 0 or y_position != 0:
+            raise RuntimeError("Cannot reset until motors are at home position")
+        with self._lock:
+            self.state = ScannerState.IDLE
+            self.current_row = 0
+            self.current_col = 0
+            self.scan_order_index = 0
+            self.cancel_flag = False
+            self.error_message = ""
+            self.upload_url = None
+            self.upload_result = None
+
     def move_motors(self, x_steps: int, y_steps: int) -> None:
         """
         Move motors by specified steps.
@@ -200,6 +238,22 @@ class ScannerCoordinator:
             raise RuntimeError("Motor is moving")
         self.scanner.capture_preview(path)
 
+    def capture_calibration_frame(self, raw_path: Path, preview_path: Path) -> dict[str, Any]:
+        """Capture one RAW+preview calibration frame at the current position."""
+        if self.state != ScannerState.IDLE:
+            raise RuntimeError("Scanner is not idle")
+        if self.scanner.is_any_motor_moving():
+            raise RuntimeError("Motor is moving")
+        self.scanner.capture_to_files(raw_path, preview_path)
+        x_position, y_position = self.scanner.get_position()
+        return {
+            "raw_path": str(raw_path),
+            "preview_path": str(preview_path),
+            "raw_size": raw_path.stat().st_size if raw_path.exists() else 0,
+            "preview_size": preview_path.stat().st_size if preview_path.exists() else 0,
+            "position": {"x": int(x_position), "y": int(y_position)},
+        }
+
     def _cancel_requested(self) -> bool:
         with self._lock:
             return self.cancel_flag
@@ -232,7 +286,7 @@ class ScannerCoordinator:
         Performs serpentine scanning pattern across the film.
         """
         try:
-            # Start moving right
+            # Start moving in +X scan direction.
             direction = 1
             scan_cancelled = False
 
@@ -245,16 +299,12 @@ class ScannerCoordinator:
                         scan_cancelled = True
                         break
 
-                    # The scanner moves in a serpentine path. On right-to-left
-                    # rows the physical column decreases, so capture filenames
-                    # must use the physical grid column rather than loop order.
-                    physical_col = scan_col if direction else X_SEGMENTS - 1 - scan_col
                     with self._lock:
-                        self.current_col = physical_col
+                        self.current_col = scan_col
                         self.scan_order_index = row * X_SEGMENTS + scan_col
 
                     # Capture at each grid point
-                    self.scanner.capture(row, physical_col)
+                    self.scanner.capture(row, scan_col)
                     with self._lock:
                         self.scan_order_index = row * X_SEGMENTS + scan_col + 1
 
@@ -343,34 +393,51 @@ class ScannerCoordinator:
         if not raw_path.exists():
             raise RuntimeError(f"Stitched raw DNG does not exist: {raw_path}")
 
-        body, content_type = _multipart_file_body("file", raw_path)
-        req = urlrequest.Request(
-            upload_url,
-            data=body,
-            headers={"Content-Type": content_type, "Content-Length": str(len(body))},
-            method="POST",
+        if _requests is None:
+            raise RuntimeError("Upload requires requests; install it in the scanner venv")
+
+        file_size = raw_path.stat().st_size
+        body, content_type = _multipart_file_stream("file", raw_path)
+        started = time.monotonic()
+        print(
+            f"Uploading stitched RAW {raw_path.name} ({file_size / (1024 * 1024):.1f} MiB) "
+            f"to {upload_url}"
         )
         try:
-            with urlrequest.urlopen(req, timeout=60) as resp:
-                payload = resp.read().decode(errors="replace")
-                return {
-                    "status": "uploaded",
-                    "url": upload_url,
-                    "http_status": resp.status,
-                    "response": payload,
-                }
-        except HTTPError as exc:
-            body = exc.read().decode(errors="replace")
-            raise RuntimeError(f"Upload failed with HTTP {exc.code}: {body}") from exc
-        except URLError as exc:
-            raise RuntimeError(f"Upload failed: {exc}") from exc
+            resp = _requests.post(
+                upload_url,
+                data=body,
+                headers={"Content-Type": content_type},
+                timeout=(10, _UPLOAD_TIMEOUT_S),
+            )
+            resp.raise_for_status()
+        except _requests.RequestException as exc:
+            detail = ""
+            response = getattr(exc, "response", None)
+            if response is not None:
+                detail = f" HTTP {response.status_code}: {response.text[:500]}"
+            raise RuntimeError(f"Upload failed: {exc}{detail}") from exc
+
+        elapsed = max(time.monotonic() - started, 1e-6)
+        print(
+            f"Uploaded stitched RAW in {elapsed:.1f}s "
+            f"({file_size / (1024 * 1024) / elapsed:.2f} MiB/s)"
+        )
+        return {
+            "status": "uploaded",
+            "url": upload_url,
+            "http_status": resp.status_code,
+            "bytes": file_size,
+            "elapsed_s": elapsed,
+            "response": resp.text,
+        }
 
     def cleanup(self) -> None:
         """Clean up resources."""
         self.scanner.cleanup()
 
 
-def _multipart_file_body(field_name: str, path: Path) -> tuple[bytes, str]:
+def _multipart_file_stream(field_name: str, path: Path) -> tuple["_MultipartFileStream", str]:
     boundary = f"----film-digitizer-{uuid.uuid4().hex}"
     mime_type = mimetypes.guess_type(str(path))[0] or "application/octet-stream"
     header = (
@@ -379,4 +446,42 @@ def _multipart_file_body(field_name: str, path: Path) -> tuple[bytes, str]:
         f"Content-Type: {mime_type}\r\n\r\n"
     ).encode()
     footer = f"\r\n--{boundary}--\r\n".encode()
-    return header + path.read_bytes() + footer, f"multipart/form-data; boundary={boundary}"
+    return _MultipartFileStream(path=path, header=header, footer=footer), f"multipart/form-data; boundary={boundary}"
+
+
+class _MultipartFileStream:
+    """Streaming multipart body with a known length for requests.
+
+    A plain generator makes requests use chunked transfer encoding, which some
+    ASGI servers reject for multipart uploads. Providing __len__ lets requests
+    send a fixed Content-Length while still reading the DNG from disk in chunks.
+    """
+
+    def __init__(self, path: Path, header: bytes, footer: bytes):
+        self.path = path
+        self.header = header
+        self.footer = footer
+        self.file_size = path.stat().st_size
+
+    def __len__(self) -> int:
+        return len(self.header) + self.file_size + len(self.footer)
+
+    def __iter__(self):
+        yield self.header
+        uploaded = 0
+        next_log = _UPLOAD_LOG_INTERVAL
+        total = self.file_size
+        with self.path.open("rb") as fh:
+            while True:
+                chunk = fh.read(_UPLOAD_CHUNK_SIZE)
+                if not chunk:
+                    break
+                uploaded += len(chunk)
+                if uploaded >= next_log or uploaded == total:
+                    print(
+                        f"Upload progress: {uploaded / (1024 * 1024):.1f}/"
+                        f"{total / (1024 * 1024):.1f} MiB"
+                    )
+                    next_log += _UPLOAD_LOG_INTERVAL
+                yield chunk
+        yield self.footer

@@ -26,20 +26,8 @@ const rawPlaceholder = document.getElementById("rawPlaceholder");
 const finalImg = document.getElementById("finalImg");
 const finalPlaceholder = document.getElementById("finalPlaceholder");
 
-const devProcessBtn = document.getElementById("devProcessBtn");
-const devSelectedInfo = document.getElementById("devSelectedInfo");
-const devCaptureBtn = document.getElementById("devCaptureBtn");
-const devCaptureStatus = document.getElementById("devCaptureStatus");
-const captureGallery = document.getElementById("captureGallery");
-const captureCount = document.getElementById("captureCount");
-const backlightBtn = document.getElementById("backlightBtn");
-const backlightStatus = document.getElementById("backlightStatus");
-const serialPortSelect = document.getElementById("serialPortSelect");
-const piCameraDevStatus = document.getElementById("piCameraDevStatus");
-
 let activeJobId = null;
 let jobPoller = null;
-let devSelected = null;
 let rawLoaded = false;
 let finalLoaded = false;
 
@@ -78,23 +66,16 @@ async function checkSystemStatus() {
         const response = await fetch("/api/system/status");
         const data = await response.json();
         setIndicator("piScannerDot", "piScannerLabel", !!data.pi_scanner_reachable, "Pi Scanner");
-        piCameraDevStatus.textContent = data.pi_camera_reachable ? "Online" : "Offline";
     } catch (_) {
         setIndicator("piScannerDot", "piScannerLabel", false, "Pi Scanner");
-        piCameraDevStatus.textContent = "Offline";
     }
 }
 
-async function createJob(sourceFilename = null) {
-    const path = sourceFilename ? "/api/dev/process_capture" : "/api/jobs";
-    const body = sourceFilename
-        ? { source_filename: sourceFilename }
-        : { job_kind: "one_click_scan" };
-
-    const response = await fetch(path, {
+async function createJob() {
+    const response = await fetch("/api/jobs", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(body),
+        body: JSON.stringify({ job_kind: "one_click_scan" }),
     });
 
     if (!response.ok) {
@@ -225,7 +206,6 @@ function onJobTerminal(job) {
 
     scanBtn.disabled = false;
     cancelBtn.disabled = true;
-    devProcessBtn.disabled = devSelected == null;
 }
 
 function resetJobUI() {
@@ -250,61 +230,9 @@ function resetJobUI() {
     resultsSection.classList.remove("hidden");
 }
 
-function selectDevCapture(filename) {
-    devSelected = filename;
-    devSelectedInfo.textContent = filename;
-    devSelectedInfo.classList.remove("dev-selected-none");
-    devProcessBtn.disabled = activeJobId != null;
-    document.querySelectorAll(".gallery-thumb").forEach((element) => {
-        element.classList.toggle("selected", element.dataset.filename === filename);
-    });
-}
-
-async function refreshGallery() {
-    try {
-        const response = await fetch("/api/dev/captures");
-        const data = await response.json();
-        const files = data.captures || [];
-        captureCount.textContent = files.length ? `${files.length}` : "";
-        captureGallery.innerHTML = "";
-
-        files.slice().reverse().forEach((filename) => {
-            const card = document.createElement("button");
-            card.type = "button";
-            card.className = `gallery-thumb${filename === devSelected ? " selected" : ""}`;
-            card.dataset.filename = filename;
-            card.innerHTML = `
-                <img src="/api/dev/captures/${encodeURIComponent(filename)}" loading="lazy" alt="${filename}" />
-                <span>${filename}</span>
-            `;
-            card.addEventListener("click", () => selectDevCapture(filename));
-            captureGallery.appendChild(card);
-        });
-    } catch (_) {
-        captureCount.textContent = "";
-    }
-}
-
-async function loadPorts() {
-    try {
-        const response = await fetch("/api/dev/serial/ports");
-        const ports = await response.json();
-        serialPortSelect.innerHTML = '<option value="">Select Port</option>';
-        ports.forEach((portInfo) => {
-            const option = document.createElement("option");
-            option.value = portInfo.port;
-            option.textContent = `${portInfo.port} - ${portInfo.description}`;
-            serialPortSelect.appendChild(option);
-        });
-    } catch (_) {
-        serialPortSelect.innerHTML = '<option value="">Select Port</option>';
-    }
-}
-
 scanBtn.addEventListener("click", async () => {
     scanBtn.disabled = true;
     cancelBtn.disabled = false;
-    devProcessBtn.disabled = true;
     resetJobUI();
     jobStatusText.textContent = "Creating one-click job.";
     try {
@@ -315,7 +243,6 @@ scanBtn.addEventListener("click", async () => {
         jobStatusText.textContent = `Error: ${error.message}`;
         scanBtn.disabled = false;
         cancelBtn.disabled = true;
-        devProcessBtn.disabled = devSelected == null;
     }
 });
 
@@ -327,77 +254,6 @@ cancelBtn.addEventListener("click", async () => {
     try {
         await fetch(`/api/jobs/${activeJobId}/cancel`, { method: "POST" });
         jobStatusText.textContent = "Cancelling job.";
-    } catch (_) {}
-});
-
-devProcessBtn.addEventListener("click", async () => {
-    if (!devSelected) {
-        return;
-    }
-    devProcessBtn.disabled = true;
-    scanBtn.disabled = true;
-    cancelBtn.disabled = false;
-    resetJobUI();
-    rawPlaceholder.textContent = "Loading selected capture.";
-    jobStatusText.textContent = `Creating developer job for ${devSelected}.`;
-    try {
-        const jobId = await createJob(devSelected);
-        rememberLastJob(jobId);
-        startPolling(jobId);
-    } catch (error) {
-        jobStatusText.textContent = `Error: ${error.message}`;
-        scanBtn.disabled = false;
-        cancelBtn.disabled = true;
-        devProcessBtn.disabled = false;
-    }
-});
-
-devCaptureBtn.addEventListener("click", async () => {
-    devCaptureBtn.disabled = true;
-    devCaptureStatus.textContent = "Capturing from Pi camera.";
-    try {
-        const response = await fetch("/api/dev/camera/capture-import", { method: "POST" });
-        const data = await response.json();
-        if (!response.ok) {
-            throw new Error(data.detail || "Capture import failed");
-        }
-        devCaptureStatus.textContent = `Imported ${data.filename}.`;
-        await refreshGallery();
-        if (data.filename) {
-            selectDevCapture(data.filename);
-        }
-    } catch (error) {
-        devCaptureStatus.textContent = `Error: ${error.message}`;
-    } finally {
-        devCaptureBtn.disabled = false;
-    }
-});
-
-backlightBtn.addEventListener("click", async () => {
-    backlightBtn.disabled = true;
-    backlightStatus.textContent = "Capturing backlight frame.";
-    try {
-        const response = await fetch("/api/dev/calibration/backlight", { method: "POST" });
-        const data = await response.json();
-        if (!response.ok) {
-            throw new Error(data.detail || "Backlight capture failed");
-        }
-        backlightStatus.textContent = "Backlight frame captured.";
-    } catch (error) {
-        backlightStatus.textContent = `Error: ${error.message}`;
-    } finally {
-        backlightBtn.disabled = false;
-    }
-});
-
-serialPortSelect.addEventListener("change", async () => {
-    const port = serialPortSelect.value;
-    try {
-        await fetch(port ? "/api/dev/serial/connect" : "/api/dev/serial/disconnect", {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: port ? JSON.stringify({ port }) : undefined,
-        });
     } catch (_) {}
 });
 
@@ -444,7 +300,4 @@ async function restoreSavedJob() {
 buildStageSteps();
 checkSystemStatus();
 setInterval(checkSystemStatus, 10000);
-loadPorts();
-refreshGallery();
-setInterval(refreshGallery, 5000);
 restoreSavedJob();

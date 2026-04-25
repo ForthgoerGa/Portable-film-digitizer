@@ -1,0 +1,89 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Scanner Dev</title>
+    <link rel="stylesheet" href="../style.css">
+    <style>
+        .dev-grid {
+            display: grid;
+            grid-template-columns: minmax(0, 1.4fr) minmax(320px, 0.6fr);
+            gap: 16px;
+        }
+        .stream-frame {
+            background: #111827;
+            border-radius: 8px;
+            overflow: hidden;
+            border: 1px solid #d6e0e7;
+            min-height: 360px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+        }
+        .stream-frame img {
+            width: 100%;
+            display: block;
+            object-fit: contain;
+            max-height: 76vh;
+        }
+        .dev-card {
+            background: #fff;
+            border: 1px solid #d6e0e7;
+            border-radius: 8px;
+            padding: 16px;
+            display: grid;
+            gap: 12px;
+        }
+        .status-line {
+            font-family: Consolas, "Courier New", monospace;
+            font-size: 0.86rem;
+            color: #526170;
+            word-break: break-word;
+        }
+        .button-row {
+            display: flex;
+            gap: 10px;
+            flex-wrap: wrap;
+        }
+        @media (max-width: 900px) {
+            .dev-grid { grid-template-columns: 1fr; }
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <header>
+            <h1>Scanner Dev</h1>
+            <p>Live camera view and direct calibration capture on the Pi worker.</p>
+            <p><a href="../">Back to scanner controls</a></p>
+        </header>
+
+        <main class="dev-grid">
+            <section class="dev-card">
+                <h2>Live Camera</h2>
+                <div class="stream-frame">
+                    <img id="cameraStream" src="../../camera/stream.mjpg" alt="Live camera stream">
+                </div>
+                <div class="button-row">
+                    <button id="restartStreamBtn" class="btn btn-secondary">Restart Stream</button>
+                    <button id="singlePreviewBtn" class="btn btn-secondary">Open Single Preview</button>
+                </div>
+                <div id="streamStatus" class="status-line">Streaming from /camera/stream.mjpg</div>
+            </section>
+
+            <aside class="dev-card">
+                <h2>Calibration Capture</h2>
+                <p>Captures one fixed-control DNG plus JPEG at the current position. It does not start a scan or post-processing job.</p>
+                <div class="button-row">
+                    <button id="captureBacklightBtn" class="btn btn-primary">Capture Backlight</button>
+                    <button id="captureBaseFrameBtn" class="btn btn-primary">Capture Base Frame</button>
+                </div>
+                <div id="captureStatus" class="status-line">Ready.</div>
+                <div id="lastCaptureLinks" class="status-line"></div>
+            </aside>
+        </main>
+    </div>
+    <script src="../dev.js"></script>
+</body>
+</html>

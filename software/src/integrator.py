@@ -106,12 +106,52 @@ def integrate_captures(captures_dir: Path = CAPTURES_DIR) -> dict[str, Any]:
     )
     pair_offsets = _load_manual_pair_offsets(captures_dir)
     manual_positions = _manual_abs_positions(pair_offsets, Y_SEGMENTS, X_SEGMENTS) if pair_offsets else None
+    alignment_mode = str(getattr(scan_config, "STITCH_ALIGNMENT_MODE", "manual_preferred")).strip().lower()
+    if alignment_mode not in {"manual_preferred", "hybrid", "refinement_only"}:
+        alignment_mode = "manual_preferred"
+
+    # Keep overlap-refinement available, but default to manual placement whenever
+    # a complete manual pair-offset graph is available.
+    if alignment_mode == "hybrid":
+        active_offsets = preview_offsets
+        applied_strategy = "hybrid_manual_plus_refinement" if manual_positions is not None else "refinement_only"
+    elif alignment_mode == "refinement_only":
+        active_offsets = preview_offsets
+        applied_strategy = "refinement_only"
+    else:
+        if manual_positions is not None:
+            active_offsets = {}
+            applied_strategy = "manual_only"
+        else:
+            active_offsets = preview_offsets
+            applied_strategy = "refinement_fallback_no_manual_coverage"
+
+    alignment_refinement["configured_mode"] = alignment_mode
+    alignment_refinement["applied_strategy"] = applied_strategy
+    alignment_refinement["applied_to_placement"] = bool(active_offsets)
+    alignment_refinement["manual_positions_available"] = bool(manual_positions is not None)
     preview_origins, preview_cw, preview_ch = _resolve_tile_origins(
-        placement, manual_positions, preview_offsets, round_to_even=False
+        placement, manual_positions, active_offsets, round_to_even=False
     )
-    raw_origins, raw_cw, raw_ch = _resolve_tile_origins(
-        placement, manual_positions, preview_offsets, round_to_even=True
+    raw_origins_dynamic, raw_cw_dynamic, raw_ch_dynamic = _resolve_tile_origins(
+        placement, manual_positions, active_offsets, round_to_even=True
     )
+    raw_origins, raw_cw, raw_ch, raw_canvas_meta = _resolve_stable_raw_canvas(
+        placement, manual_positions, active_offsets
+    )
+    preview_crop, preview_crop_meta = _edge_alignment_crop(
+        placement, preview_origins, (preview_cw, preview_ch), round_to_even=False
+    )
+    raw_crop = None
+    raw_crop_meta = {
+        "enabled": False,
+        "reason": "canonical_raw_uses_fixed_canvas",
+        "canvas_size": {"width": raw_cw, "height": raw_ch},
+        "dynamic_canvas_size_without_fixed_margin": {
+            "width": raw_cw_dynamic,
+            "height": raw_ch_dynamic,
+        },
+    }
     preview_result = _stitch_preview(
         preview_tiles,
         preview_path,
@@ -119,16 +159,19 @@ def integrate_captures(captures_dir: Path = CAPTURES_DIR) -> dict[str, Any]:
         brightness_gains,
         origins=preview_origins,
         canvas_size=(preview_cw, preview_ch),
+        canvas_crop=preview_crop,
     )
     raw_result = _stitch_raw_dng(
         raw_tiles, raw_path, placement,
         origins=raw_origins,
         canvas_size=(raw_cw, raw_ch),
+        canvas_crop=raw_crop,
     )
 
     manifest = {
         "created_at": time.time(),
         "grid": {"rows": Y_SEGMENTS, "cols": X_SEGMENTS},
+        "capture_indexing_mode": _capture_indexing_mode(),
         "placement": {
             "tile_width": placement.tile_width,
             "tile_height": placement.tile_height,
@@ -170,9 +213,16 @@ def integrate_captures(captures_dir: Path = CAPTURES_DIR) -> dict[str, Any]:
             },
         },
         "alignment_refinement": alignment_refinement,
+        "edge_crop": {
+            "preview": preview_crop_meta,
+            "raw": raw_crop_meta,
+        },
+        "raw_canvas": raw_canvas_meta,
         "manual_alignment": {
             "pairs_defined": len(pair_offsets),
             "full_coverage": manual_positions is not None,
+            "configured_mode": alignment_mode,
+            "applied_strategy": applied_strategy,
         },
         "stitched_preview": _relative_or_none(preview_result),
         "stitched_raw": _relative_or_none(raw_result),
@@ -191,6 +241,14 @@ def integrate_captures(captures_dir: Path = CAPTURES_DIR) -> dict[str, Any]:
 
 
 def _discover_tiles(captures_dir: Path, suffixes: set[str]) -> dict[tuple[int, int], Path]:
+    return _discover_tiles_with_mode(captures_dir, suffixes, normalize_index=True)
+
+
+def _discover_tiles_with_mode(
+    captures_dir: Path,
+    suffixes: set[str],
+    normalize_index: bool,
+) -> dict[tuple[int, int], Path]:
     tiles: dict[tuple[int, int], Path] = {}
     for path in captures_dir.iterdir() if captures_dir.exists() else []:
         if not path.is_file() or path.suffix.lower() not in suffixes:
@@ -200,8 +258,28 @@ def _discover_tiles(captures_dir: Path, suffixes: set[str]) -> dict[tuple[int, i
             continue
         row = int(match.group(1))
         col = int(match.group(2))
+        if normalize_index:
+            row, col = _normalize_capture_index(row, col)
         tiles[(row, col)] = path
     return tiles
+
+
+def _capture_indexing_mode() -> str:
+    mode = str(getattr(scan_config, "STITCH_CAPTURE_INDEXING_MODE", "serpentine_scan_order")).strip().lower()
+    if mode not in {"serpentine_scan_order", "physical_grid"}:
+        return "serpentine_scan_order"
+    return mode
+
+
+def _normalize_capture_index(row: int, col: int) -> tuple[int, int]:
+    """Map filename row/col to physical grid coordinates for stitching math."""
+    if _capture_indexing_mode() != "serpentine_scan_order":
+        return row, col
+    if row < 0 or col < 0 or col >= X_SEGMENTS:
+        return row, col
+    if row % 2 == 1:
+        return row, (X_SEGMENTS - 1 - col)
+    return row, col
 
 
 def _build_placement(
@@ -294,6 +372,18 @@ def _resolve_stride(tile_width: int, tile_height: int) -> tuple[int, int, str]:
     return tile_width, tile_height, "no_overlap_default"
 
 
+def _apply_x_axis_orientation(
+    step_x_dx: int,
+    step_x_dy: int,
+    step_y_dx: int,
+    step_y_dy: int,
+) -> tuple[int, int, int, int, str]:
+    """Apply configured axis orientation to placement step vectors."""
+    if bool(getattr(scan_config, "STITCH_X_AXIS_REVERSED", False)):
+        return -int(step_x_dx), -int(step_x_dy), int(step_y_dx), int(step_y_dy), "x_axis_reversed"
+    return int(step_x_dx), int(step_x_dy), int(step_y_dx), int(step_y_dy), "x_axis_normal"
+
+
 def _resolve_step_vectors(
     tile_width: int,
     tile_height: int,
@@ -319,16 +409,28 @@ def _resolve_step_vectors(
         sx_dy = int(step_x_dy)
         sy_dx = int(step_y_dx)
         sy_dy = int(step_y_dy)
+        sx_dx, sx_dy, sy_dx, sy_dy, orientation = _apply_x_axis_orientation(
+            sx_dx,
+            sx_dy,
+            sy_dx,
+            sy_dy,
+        )
         return (
             sx_dx,
             sx_dy,
             sy_dx,
             sy_dy,
-            "configured_step_vectors_px",
+            f"configured_step_vectors_px:{orientation}",
         )
 
     stride_x, stride_y, source = _resolve_stride(tile_width, tile_height)
-    return int(stride_x), 0, 0, int(stride_y), source
+    sx_dx, sx_dy, sy_dx, sy_dy, orientation = _apply_x_axis_orientation(
+        int(stride_x),
+        0,
+        0,
+        int(stride_y),
+    )
+    return sx_dx, sx_dy, sy_dx, sy_dy, f"{source}:{orientation}"
 
 
 def _tile_origin(placement: Placement, row: int, col: int) -> tuple[int, int]:
@@ -352,40 +454,57 @@ def _tile_origin_with_offset(
 
 
 def _load_manual_pair_offsets(captures_dir: Path) -> dict:
-    """Read current-scan alignment measurements; last entry per pair wins."""
+    """Read manual alignment measurements.
+
+    Priority is current scan-local/signature-specific measurements first, then
+    reusable default profile entries for any missing pairs.
+    """
     candidates = []
+    capture_signature = _capture_signature_for_dir(captures_dir)
     scan_local = captures_dir / "alignment_measurements.json"
-    if scan_local.exists():
-        candidates.append((scan_local, None))
+    if scan_local.exists() and capture_signature:
+        candidates.append((scan_local, capture_signature, "measurements"))
 
     persistent = Path(__file__).parent / "calibration" / "alignment_measurements.json"
-    capture_signature = _capture_signature_for_dir(captures_dir)
     if persistent.exists() and capture_signature:
-        candidates.append((persistent, capture_signature))
+        candidates.append((persistent, capture_signature, "measurements"))
+
+    default_profile = Path(__file__).parent / "calibration" / "alignment_default_profile.json"
+    if default_profile.exists():
+        candidates.append((default_profile, None, "measurements"))
 
     if not candidates:
         return {}
 
     result = {}
-    for path, expected_signature in candidates:
+    for path, expected_signature, measurements_key in candidates:
         try:
             data = json.loads(path.read_text(encoding="utf-8"))
         except Exception:
             continue
-        for m in data.get("measurements", []):
+        for m in data.get(measurements_key, []):
             if expected_signature and m.get("capture_signature") != expected_signature:
                 continue
             try:
                 src = (int(m["row"]), int(m["col"]))
                 dst = (int(m["neighbor_row"]), int(m["neighbor_col"]))
-                result[(src, dst)] = (int(m["dx"]), int(m["dy"]))
+                coordinate_space = str(m.get("coordinate_space", "scan_order")).strip().lower()
+                if coordinate_space not in {"physical_grid", "physical"}:
+                    src = _normalize_capture_index(*src)
+                    dst = _normalize_capture_index(*dst)
+                result.setdefault((src, dst), (int(m["dx"]), int(m["dy"])))
             except (KeyError, ValueError, TypeError):
                 continue
     return result
 
 
 def _capture_signature_for_dir(captures_dir: Path) -> str | None:
-    tiles = _discover_tiles(captures_dir, {".jpg", ".jpeg", ".png"})
+    # Keep capture signature in filename index space so it matches main.py.
+    tiles = _discover_tiles_with_mode(
+        captures_dir,
+        {".jpg", ".jpeg", ".png"},
+        normalize_index=False,
+    )
     if not tiles:
         return None
     digest = hashlib.sha256()
@@ -466,6 +585,96 @@ def _resolve_tile_origins(
     return origins, canvas_w, canvas_h
 
 
+def _resolve_stable_raw_canvas(
+    placement: Placement,
+    manual_positions,
+    phase_offsets,
+) -> tuple[dict[tuple[int, int], tuple[int, int]], int, int, dict[str, Any]]:
+    """Place RAW tiles on a fixed-size canvas for calibration compatibility.
+
+    Preview alignment may crop ragged edges for display. The canonical RAW DNG
+    must not change dimensions from scan to scan, otherwise a backlight/base
+    calibration captured on one scan cannot be applied to the next scan. Reserve
+    a fixed correction margin around the physical placement model and place the
+    refined tile coordinates inside it.
+    """
+    max_correction = max(int(getattr(scan_config, "STITCH_REFINE_MAX_CORRECTION_PX", 0)), 0)
+    margin = int(math.ceil(max_correction / 2)) * 2
+
+    if manual_positions is not None:
+        canvas_w = int(math.ceil((placement.canvas_width + 2 * margin) / 2)) * 2
+        canvas_h = int(math.ceil((placement.canvas_height + 2 * margin) / 2)) * 2
+        origins: dict[tuple[int, int], tuple[int, int]] = {}
+        out_of_bounds: list[str] = []
+        for row in range(placement.rows):
+            for col in range(placement.cols):
+                x, y = manual_positions[(row, col)]
+                if phase_offsets:
+                    dx, dy = phase_offsets.get((row, col), (0, 0))
+                    x += dx
+                    y += dy
+                x = int(round((x + placement.origin_x + margin) / 2)) * 2
+                y = int(round((y + placement.origin_y + margin) / 2)) * 2
+                origins[(row, col)] = (x, y)
+                if (
+                    x < 0
+                    or y < 0
+                    or x + placement.tile_width > canvas_w
+                    or y + placement.tile_height > canvas_h
+                ):
+                    out_of_bounds.append(f"row_{row}_col_{col}")
+
+        if not out_of_bounds:
+            return origins, canvas_w, canvas_h, {
+                "stable": True,
+                "reason": "fixed_margin_around_physical_model_with_manual_alignment",
+                "width": canvas_w,
+                "height": canvas_h,
+                "margin_px": margin,
+                "base_canvas_width": placement.canvas_width,
+                "base_canvas_height": placement.canvas_height,
+            }
+
+        dynamic_origins, dynamic_w, dynamic_h = _resolve_tile_origins(
+            placement,
+            manual_positions,
+            phase_offsets,
+            round_to_even=True,
+        )
+        return dynamic_origins, dynamic_w, dynamic_h, {
+            "stable": False,
+            "reason": "manual_alignment_exceeded_fixed_margin",
+            "width": int(dynamic_w),
+            "height": int(dynamic_h),
+            "margin_px": margin,
+            "out_of_bounds_tiles": out_of_bounds,
+        }
+
+    origins: dict[tuple[int, int], tuple[int, int]] = {}
+    for row in range(placement.rows):
+        for col in range(placement.cols):
+            x, y = _tile_origin(placement, row, col)
+            if phase_offsets:
+                dx, dy = phase_offsets.get((row, col), (0, 0))
+                x += dx
+                y += dy
+            x = int(round((x + margin) / 2)) * 2
+            y = int(round((y + margin) / 2)) * 2
+            origins[(row, col)] = (x, y)
+
+    canvas_w = int(math.ceil((placement.canvas_width + 2 * margin) / 2)) * 2
+    canvas_h = int(math.ceil((placement.canvas_height + 2 * margin) / 2)) * 2
+    return origins, canvas_w, canvas_h, {
+        "stable": True,
+        "reason": "fixed_margin_around_physical_model",
+        "width": canvas_w,
+        "height": canvas_h,
+        "margin_px": margin,
+        "base_canvas_width": placement.canvas_width,
+        "base_canvas_height": placement.canvas_height,
+    }
+
+
 def _estimate_preview_brightness_gains(
     tiles: dict[tuple[int, int], Path],
 ) -> dict[tuple[int, int], float]:
@@ -494,7 +703,7 @@ def _estimate_preview_alignment_offsets(
     tiles: dict[tuple[int, int], Path],
     placement: Placement,
 ) -> tuple[dict[tuple[int, int], tuple[int, int]], dict[str, Any]]:
-    """Estimate per-tile offsets by solving overlap constraints globally."""
+    """Estimate offsets in two stages: tiles within rows, then row strips."""
     if Image is None or np is None or len(tiles) < 2:
         return {}, {"enabled": False, "reason": "missing_dependencies_or_tiles"}
 
@@ -514,13 +723,13 @@ def _estimate_preview_alignment_offsets(
         gray_tiles[key] = arr
 
     residual_h: dict[tuple[int, int], tuple[int, int]] = {}
-    residual_v: dict[tuple[int, int], tuple[int, int]] = {}
-    pair_edges: list[dict[str, Any]] = []
-    accepted_pairs = 0
+    residual_h_ds: dict[tuple[int, int], tuple[int, int]] = {}
+    row_residuals: dict[int, tuple[int, int]] = {}
+    accepted_tile_pairs = 0
+    accepted_row_pairs = 0
 
     step_x_dx_ds = int(round(placement.step_x_dx / downsample))
     step_x_dy_ds = int(round(placement.step_x_dy / downsample))
-    step_y_dx_ds = int(round(placement.step_y_dx / downsample))
     step_y_dy_ds = int(round(placement.step_y_dy / downsample))
 
     for row in range(Y_SEGMENTS):
@@ -546,50 +755,78 @@ def _estimate_preview_alignment_offsets(
                         if snr >= min_snr:
                             residual = (int(dx_ds * downsample), int(dy_ds * downsample))
                             residual_h[(row, col)] = residual
-                            pair_edges.append({
-                                "src": (row, col - 1),
-                                "dst": (row, col),
-                                "axis": "x",
-                                "dx": residual[0],
-                                "dy": residual[1],
-                                "snr": float(snr),
-                            })
-                            accepted_pairs += 1
-
-            if row > 0 and (row - 1, col) in gray_tiles:
-                ref = gray_tiles[(row - 1, col)]
-                cur = gray_tiles[(row, col)]
-                pair = _extract_overlap_pair(ref, cur, step_y_dx_ds, step_y_dy_ds)
-                if pair is not None:
-                    ref_patch, cur_patch = pair
-                    if (
-                        ref_patch.shape[0] >= min_overlap_ds
-                        and ref_patch.shape[1] >= min_overlap_ds
-                    ):
-                        dx_ds, dy_ds, snr = _phase_correlation_shift(
-                            ref_patch,
-                            cur_patch,
-                            max_shift_ds,
-                        )
-                        if snr >= min_snr:
-                            residual = (int(dx_ds * downsample), int(dy_ds * downsample))
-                            residual_v[(row, col)] = residual
-                            pair_edges.append({
-                                "src": (row - 1, col),
-                                "dst": (row, col),
-                                "axis": "y",
-                                "dx": residual[0],
-                                "dy": residual[1],
-                                "snr": float(snr),
-                            })
-                            accepted_pairs += 1
+                            residual_h_ds[(row, col)] = (int(dx_ds), int(dy_ds))
+                            accepted_tile_pairs += 1
 
     max_correction_px = max(int(getattr(scan_config, "STITCH_REFINE_MAX_CORRECTION_PX", 96)), 0)
-    offsets, solve_meta = _solve_global_alignment_offsets(
-        pair_edges,
-        available_tiles=set(gray_tiles),
-        max_correction_px=max_correction_px,
+    row_internal_offsets: dict[tuple[int, int], tuple[int, int]] = {}
+    row_internal_offsets_ds: dict[tuple[int, int], tuple[int, int]] = {}
+    for row in range(Y_SEGMENTS):
+        row_internal_offsets[(row, 0)] = (0, 0)
+        row_internal_offsets_ds[(row, 0)] = (0, 0)
+        for col in range(1, X_SEGMENTS):
+            prev = row_internal_offsets.get((row, col - 1))
+            prev_ds = row_internal_offsets_ds.get((row, col - 1))
+            if prev is None or prev_ds is None:
+                continue
+            rx, ry = residual_h.get((row, col), (0, 0))
+            rx_ds, ry_ds = residual_h_ds.get((row, col), (0, 0))
+            row_internal_offsets[(row, col)] = (
+                int(np.clip(prev[0] + rx, -max_correction_px, max_correction_px)),
+                int(np.clip(prev[1] + ry, -max_correction_px, max_correction_px)),
+            )
+            row_internal_offsets_ds[(row, col)] = (
+                int(np.clip(prev_ds[0] + rx_ds, -max_shift_ds * X_SEGMENTS, max_shift_ds * X_SEGMENTS)),
+                int(np.clip(prev_ds[1] + ry_ds, -max_shift_ds * X_SEGMENTS, max_shift_ds * X_SEGMENTS)),
+            )
+
+    row_strips = _compose_alignment_rows(
+        gray_tiles,
+        row_internal_offsets_ds,
+        placement,
+        step_x_dx_ds,
+        step_x_dy_ds,
     )
+    row_strips = _pad_alignment_rows(row_strips)
+    for row in range(1, Y_SEGMENTS):
+        ref = row_strips.get(row - 1)
+        cur = row_strips.get(row)
+        if ref is None or cur is None:
+            continue
+        pair = _extract_overlap_pair(ref, cur, 0, step_y_dy_ds)
+        if pair is None:
+            continue
+        ref_patch, cur_patch = pair
+        if ref_patch.shape[0] < min_overlap_ds or ref_patch.shape[1] < min_overlap_ds:
+            continue
+        dx_ds, dy_ds, snr = _phase_correlation_shift(ref_patch, cur_patch, max_shift_ds)
+        if snr >= min_snr:
+            row_residuals[row] = (int(dx_ds * downsample), int(dy_ds * downsample))
+            accepted_row_pairs += 1
+
+    row_offsets: dict[int, tuple[int, int]] = {0: (0, 0)}
+    for row in range(1, Y_SEGMENTS):
+        prev = row_offsets.get(row - 1)
+        if prev is None:
+            continue
+        rx, ry = row_residuals.get(row, (0, 0))
+        row_offsets[row] = (
+            int(np.clip(prev[0] + rx, -max_correction_px, max_correction_px)),
+            int(np.clip(prev[1] + ry, -max_correction_px, max_correction_px)),
+        )
+
+    offsets: dict[tuple[int, int], tuple[int, int]] = {}
+    for row in range(Y_SEGMENTS):
+        row_dx, row_dy = row_offsets.get(row, (0, 0))
+        for col in range(X_SEGMENTS):
+            if (row, col) not in gray_tiles:
+                continue
+            tile_dx, tile_dy = row_internal_offsets.get((row, col), (0, 0))
+            offsets[(row, col)] = (
+                int(np.clip(row_dx + tile_dx, -max_correction_px, max_correction_px)),
+                int(np.clip(row_dy + tile_dy, -max_correction_px, max_correction_px)),
+            )
+
     used_tiles = len(offsets)
 
     nonzero = {
@@ -603,104 +840,177 @@ def _estimate_preview_alignment_offsets(
     }
     meta = {
         "enabled": True,
-        "mode": "preview_overlap_phase_correlation_global_graph",
+        "mode": "row_then_vertical_overlap_refinement",
         "downsample": downsample,
-        "accepted_pairs": accepted_pairs,
+        "accepted_pairs": accepted_tile_pairs + accepted_row_pairs,
+        "accepted_tile_pairs": accepted_tile_pairs,
+        "accepted_row_pairs": accepted_row_pairs,
         "used_tiles": used_tiles,
         "max_shift_px": max_shift_px,
         "max_correction_px": max_correction_px,
-        "solver": solve_meta,
-        "pair_residuals": [
+        "horizontal_pair_residuals": [
             {
-                "src": f"row_{edge['src'][0]}_col_{edge['src'][1]}",
-                "dst": f"row_{edge['dst'][0]}_col_{edge['dst'][1]}",
-                "axis": edge["axis"],
-                "dx": int(edge["dx"]),
-                "dy": int(edge["dy"]),
-                "snr": round(float(edge["snr"]), 3),
+                "src": f"row_{row}_col_{col - 1}",
+                "dst": f"row_{row}_col_{col}",
+                "dx": int(dx),
+                "dy": int(dy),
             }
-            for edge in pair_edges
+            for (row, col), (dx, dy) in sorted(residual_h.items())
+        ],
+        "row_pair_residuals": [
+            {
+                "src": f"row_{row - 1}",
+                "dst": f"row_{row}",
+                "dx": int(dx),
+                "dy": int(dy),
+            }
+            for row, (dx, dy) in sorted(row_residuals.items())
         ],
         "offsets": serializable_offsets,
     }
     return offsets, meta
 
 
-def _solve_global_alignment_offsets(
-    pair_edges: list[dict[str, Any]],
-    available_tiles: set[tuple[int, int]],
-    max_correction_px: int,
-) -> tuple[dict[tuple[int, int], tuple[int, int]], dict[str, Any]]:
-    """Solve tile correction offsets from all accepted pair residuals.
+def _compose_alignment_rows(
+    gray_tiles: dict[tuple[int, int], Any],
+    row_offsets_ds: dict[tuple[int, int], tuple[int, int]],
+    placement: Placement,
+    step_x_dx_ds: int,
+    step_x_dy_ds: int,
+) -> dict[int, Any]:
+    rows: dict[int, Any] = {}
+    if np is None:
+        return rows
+    for row in range(Y_SEGMENTS):
+        row_tiles = [(col, gray_tiles[(row, col)]) for col in range(X_SEGMENTS) if (row, col) in gray_tiles]
+        if not row_tiles:
+            continue
+        raw_positions = {}
+        for col, tile in row_tiles:
+            ox, oy = row_offsets_ds.get((row, col), (0, 0))
+            raw_positions[col] = (col * step_x_dx_ds + ox, col * step_x_dy_ds + oy)
+        min_x = min(x for x, _ in raw_positions.values())
+        min_y = min(y for _, y in raw_positions.values())
+        width = max(raw_positions[col][0] - min_x + tile.shape[1] for col, tile in row_tiles)
+        height = max(raw_positions[col][1] - min_y + tile.shape[0] for col, tile in row_tiles)
+        canvas = np.zeros((int(height), int(width)), dtype=np.float32)
+        score_canvas = np.full((int(height), int(width)), -1.0, dtype=np.float32)
+        for col, tile in row_tiles:
+            x = int(raw_positions[col][0] - min_x)
+            y = int(raw_positions[col][1] - min_y)
+            score = _alignment_source_score(tile.shape[1], tile.shape[0])
+            region = canvas[y : y + tile.shape[0], x : x + tile.shape[1]]
+            score_region = score_canvas[y : y + tile.shape[0], x : x + tile.shape[1]]
+            use_tile = score > score_region
+            region[use_tile] = tile[use_tile]
+            score_region[use_tile] = score[use_tile]
+        rows[row] = canvas
+    return rows
 
-    Each edge constrains offset[dst] - offset[src] to the measured residual.
-    Anchoring row_0_col_0 keeps the scan in the calibrated physical coordinate
-    frame while still allowing row-to-row X drift and local mechanical error.
-    """
-    if not pair_edges or (0, 0) not in available_tiles:
-        return {(0, 0): (0, 0)} if (0, 0) in available_tiles else {}, {
-            "method": "weighted_relaxation",
-            "iterations": 0,
-            "edge_count": len(pair_edges),
-            "reached_tiles": 1 if (0, 0) in available_tiles else 0,
-            "reason": "no_edges_or_missing_anchor",
+
+def _alignment_source_score(width: int, height: int) -> Any:
+    x = np.linspace(-1.0, 1.0, int(width), dtype=np.float32)
+    y = np.linspace(-1.0, 1.0, int(height), dtype=np.float32)
+    score_x = 1.0 - np.abs(x)
+    score_y = 1.0 - np.abs(y)
+    return score_y[:, None] * score_x[None, :]
+
+
+def _pad_alignment_rows(rows: dict[int, Any]) -> dict[int, Any]:
+    if not rows or np is None:
+        return rows
+    max_height = max(int(row.shape[0]) for row in rows.values())
+    max_width = max(int(row.shape[1]) for row in rows.values())
+    padded = {}
+    for row, image in rows.items():
+        out = np.zeros((max_height, max_width), dtype=np.float32)
+        out[: image.shape[0], : image.shape[1]] = image
+        padded[row] = out
+    return padded
+
+
+def _edge_alignment_crop(
+    placement: Placement,
+    origins: dict[tuple[int, int], tuple[int, int]],
+    canvas_size: tuple[int, int],
+    round_to_even: bool,
+) -> tuple[tuple[int, int, int, int] | None, dict[str, Any]]:
+    """Crop to the common row/column coverage when offsets create ragged edges."""
+    canvas_w, canvas_h = int(canvas_size[0]), int(canvas_size[1])
+    if not origins:
+        return None, {"enabled": False, "reason": "missing_origins"}
+
+    row_extents = []
+    for row in range(placement.rows):
+        row_tiles = [
+            origins[(row, col)]
+            for col in range(placement.cols)
+            if (row, col) in origins
+        ]
+        if row_tiles:
+            row_extents.append((
+                min(x for x, _ in row_tiles),
+                max(x + placement.tile_width for x, _ in row_tiles),
+            ))
+
+    col_extents = []
+    for col in range(placement.cols):
+        col_tiles = [
+            origins[(row, col)]
+            for row in range(placement.rows)
+            if (row, col) in origins
+        ]
+        if col_tiles:
+            col_extents.append((
+                min(y for _, y in col_tiles),
+                max(y + placement.tile_height for _, y in col_tiles),
+            ))
+
+    left = max((x0 for x0, _ in row_extents), default=0)
+    right = min((x1 for _, x1 in row_extents), default=canvas_w)
+    top = max((y0 for y0, _ in col_extents), default=0)
+    bottom = min((y1 for _, y1 in col_extents), default=canvas_h)
+
+    left = max(0, min(left, canvas_w))
+    right = max(0, min(right, canvas_w))
+    top = max(0, min(top, canvas_h))
+    bottom = max(0, min(bottom, canvas_h))
+
+    min_width = int(canvas_w * 0.70)
+    min_height = int(canvas_h * 0.70)
+    if right - left < min_width or bottom - top < min_height:
+        return None, {
+            "enabled": False,
+            "reason": "common_crop_too_small",
+            "candidate": {"left": left, "top": top, "right": right, "bottom": bottom},
+            "canvas_size": {"width": canvas_w, "height": canvas_h},
         }
 
-    offsets: dict[tuple[int, int], tuple[float, float]] = {(0, 0): (0.0, 0.0)}
-    iterations = 0
-    for iterations in range(1, 41):
-        proposals: dict[tuple[int, int], list[tuple[float, float, float]]] = {
-            (0, 0): [(0.0, 0.0, 1_000_000.0)]
-        }
-        for edge in pair_edges:
-            src = edge["src"]
-            dst = edge["dst"]
-            dx = float(edge["dx"])
-            dy = float(edge["dy"])
-            weight = max(0.25, min(float(edge.get("snr", 1.0)), 25.0))
-            if src in offsets and dst in available_tiles:
-                sx, sy = offsets[src]
-                proposals.setdefault(dst, []).append((sx + dx, sy + dy, weight))
-            if dst in offsets and src in available_tiles:
-                tx, ty = offsets[dst]
-                proposals.setdefault(src, []).append((tx - dx, ty - dy, weight))
+    if round_to_even:
+        left = int(math.ceil(left / 2)) * 2
+        top = int(math.ceil(top / 2)) * 2
+        right = int(math.floor(right / 2)) * 2
+        bottom = int(math.floor(bottom / 2)) * 2
 
-        next_offsets: dict[tuple[int, int], tuple[float, float]] = {}
-        max_delta = 0.0
-        for tile, values in proposals.items():
-            if tile == (0, 0):
-                nx, ny = 0.0, 0.0
-            else:
-                total_weight = sum(weight for _, _, weight in values)
-                if total_weight <= 0:
-                    continue
-                nx = sum(x * weight for x, _, weight in values) / total_weight
-                ny = sum(y * weight for _, y, weight in values) / total_weight
-                nx = float(np.clip(nx, -max_correction_px, max_correction_px))
-                ny = float(np.clip(ny, -max_correction_px, max_correction_px))
-
-            old = offsets.get(tile)
-            if old is None:
-                max_delta = max(max_delta, abs(nx), abs(ny))
-            else:
-                max_delta = max(max_delta, abs(nx - old[0]), abs(ny - old[1]))
-            next_offsets[tile] = (nx, ny)
-
-        offsets = next_offsets
-        if len(offsets) >= len(available_tiles) and max_delta < 0.1:
-            break
-
-    rounded = {
-        tile: (int(round(dx)), int(round(dy)))
-        for tile, (dx, dy) in offsets.items()
+    crop = (left, top, right, bottom)
+    cuts = {
+        "left": left,
+        "top": top,
+        "right": canvas_w - right,
+        "bottom": canvas_h - bottom,
     }
-    return rounded, {
-        "method": "weighted_pair_graph_relaxation",
-        "iterations": iterations,
-        "edge_count": len(pair_edges),
-        "reached_tiles": len(rounded),
-        "available_tiles": len(available_tiles),
-        "anchor": "row_0_col_0",
+    if not any(cuts.values()):
+        return None, {
+            "enabled": False,
+            "reason": "edges_already_rectangular",
+            "canvas_size": {"width": canvas_w, "height": canvas_h},
+        }
+    return crop, {
+        "enabled": True,
+        "crop": {"left": left, "top": top, "right": right, "bottom": bottom},
+        "cuts": cuts,
+        "canvas_size_before": {"width": canvas_w, "height": canvas_h},
+        "canvas_size_after": {"width": right - left, "height": bottom - top},
     }
 
 
@@ -775,6 +1085,7 @@ def _stitch_preview(
     offsets: dict[tuple[int, int], tuple[int, int]] | None = None,
     origins: dict | None = None,
     canvas_size: tuple | None = None,
+    canvas_crop: tuple[int, int, int, int] | None = None,
 ) -> Path | None:
     if Image is None or np is None or not tiles:
         return None
@@ -787,6 +1098,7 @@ def _stitch_preview(
             offsets,
             origins=origins,
             canvas_size=canvas_size,
+            canvas_crop=canvas_crop,
         )
 
     # For large overlaps, averaging neighboring tiles can produce visible ghosting
@@ -815,6 +1127,9 @@ def _stitch_preview(
                 region[use_tile] = tile[use_tile]
                 score_region[use_tile] = score[use_tile]
 
+    if canvas_crop is not None:
+        left, top, right, bottom = canvas_crop
+        canvas = canvas[top:bottom, left:right]
     image = Image.fromarray(np.clip(canvas, 0, 255).astype(np.uint8), mode="RGB")
     tmp_path = output_path.with_suffix(output_path.suffix + ".tmp")
     image.save(tmp_path, format="JPEG", quality=95)
@@ -830,6 +1145,7 @@ def _stitch_preview_no_overlap(
     offsets: dict[tuple[int, int], tuple[int, int]] | None = None,
     origins: dict | None = None,
     canvas_size: tuple | None = None,
+    canvas_crop: tuple[int, int, int, int] | None = None,
 ) -> Path | None:
     _ncw = canvas_size[0] if canvas_size else placement.canvas_width
     _nch = canvas_size[1] if canvas_size else placement.canvas_height
@@ -847,6 +1163,8 @@ def _stitch_preview_no_overlap(
                     tile = Image.fromarray(np.clip(arr * gain, 0, 255).astype(np.uint8), mode="RGB")
                 _pos = origins[(row, col)] if origins and (row, col) in origins else _tile_origin_with_offset(placement, row, col, offsets)
                 canvas.paste(tile, _pos)
+    if canvas_crop is not None:
+        canvas = canvas.crop(canvas_crop)
     tmp_path = output_path.with_suffix(output_path.suffix + ".tmp")
     canvas.save(tmp_path, format="JPEG", quality=95)
     tmp_path.replace(output_path)
@@ -859,6 +1177,7 @@ def _stitch_raw_dng(
     placement: Placement,
     origins: dict | None = None,
     canvas_size: tuple | None = None,
+    canvas_crop: tuple[int, int, int, int] | None = None,
 ) -> Path | None:
     if np is None or not tiles:
         return None
@@ -882,11 +1201,14 @@ def _stitch_raw_dng(
                     raise RuntimeError(f"RAW tile size mismatch: {tile_path.name}")
                 x, y = origins[(row, col)] if origins and (row, col) in origins else _tile_origin(placement, row, col)
                 canvas[y : y + tile.height, x : x + tile.width] = tile.pixels
+        if canvas_crop is not None:
+            left, top, right, bottom = canvas_crop
+            canvas = canvas[top:bottom, left:right]
         metadata = dict(first.metadata)
         metadata.update(
             {
-                "width": placement.canvas_width,
-                "height": placement.canvas_height,
+                "width": int(canvas.shape[1]),
+                "height": int(canvas.shape[0]),
                 "software": "ece_445 software/src/integrator.py",
                 "raw_overlap_policy": "none",
             }
@@ -915,11 +1237,14 @@ def _stitch_raw_dng(
                 region[use_tile] = tile.pixels[use_tile]
                 score_region[use_tile] = score[use_tile]
 
+    if canvas_crop is not None:
+        left, top, right, bottom = canvas_crop
+        canvas = canvas[top:bottom, left:right]
     metadata = dict(first.metadata)
     metadata.update(
         {
-            "width": placement.canvas_width,
-            "height": placement.canvas_height,
+            "width": int(canvas.shape[1]),
+            "height": int(canvas.shape[0]),
             "software": "ece_445 software/src/integrator.py",
             "raw_overlap_policy": "preserve_sensor_samples_center_priority",
         }

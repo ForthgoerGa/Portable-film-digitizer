@@ -625,6 +625,20 @@ Recommended processing path for this phase:
 - use the negative branch first if a temporary single-branch integration is
   needed to validate the end-to-end path
 
+PC-side implementation status (2026-04-23):
+
+- the processing adapter dispatches to `Post_Processing_Negative` via
+  `run_physical_correction.py` when canonical `stitched_raw.dng` plus backlight
+  and base-frame calibration DNGs are available, and falls back to the Phase 1
+  preview runner otherwise
+- `selected_branch` is populated as `"negative"` on the negative path and
+  `null` on the fallback path; classification is returned as `"negative_film"`
+  when the branch runs
+- calibration artifacts are managed by `software/calibration_store.py` and
+  surfaced via `/api/dev/calibration/*`
+- `backlight_reference_url` is populated on new jobs when a backlight DNG is
+  present in the calibration store
+
 ### Phase 3: Integrate classification and richer processing selection
 
 Deliverables:
@@ -634,6 +648,33 @@ Deliverables:
 - negative branch integrated through `Post_Processing_Negative`
 - placeholders or initial implementations for positive and instax branches
 - better metadata in the progress UI
+
+PC-side implementation status (2026-04-23):
+
+- the processing adapter runs the agentic `ClassifierAgent`
+  (`Agentic_Post_Processing/agents/classifier.py`) on the browser-safe JPG
+  preview. The agent uses its own `.env` to call the configured VLM and falls
+  back to a heuristic classifier when no API key or network is available.
+- classification results are normalized to `negative_film`, `positive_film`, or
+  `instax_instant_film`. An Instax heuristic (bright desaturated border around
+  a darker central image) upgrades a `positive_film` result to `instax` when
+  the pattern matches.
+- branch dispatch table:
+
+  | Classification | Calibration ready | Branch |
+  |---|---|---|
+  | `negative_film` | yes | `negative_raw` — subprocess `Post_Processing_Negative/run_physical_correction.py` |
+  | `negative_film` | no | `negative_preview` — in-process `pipelines/negative.py` on the preview |
+  | `positive_film` | any | `positive` — in-process `pipelines/positive.py` on the preview |
+  | `instax_instant_film` | any | `instax` — in-process `pipelines/positive.py` with Instax-tuned `PipelineParams` |
+  | classifier failure | any | `preview_fallback` — `_run_single.py` subprocess (last resort) |
+
+- the heuristic classifier now evaluates the orange-cast metric on a central
+  ROI instead of the full frame so bright backlight outside the film gate does
+  not drown out negative-film's red-channel dominance.
+- `processing{}` in the job model now includes `classifier_mode` alongside
+  `classification`, `selected_branch`, `runner_used`, `iteration/max_iterations`,
+  and `score`; the browser UI surfaces all of them as chips.
 
 ### Phase 4: Replace debug UI with final product UI
 

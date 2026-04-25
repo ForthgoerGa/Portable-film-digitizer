@@ -53,6 +53,15 @@ STITCH_OVERLAP_Y_PX = 0
 STITCH_TILE_STRIDE_X_PX = 2800
 STITCH_TILE_STRIDE_Y_PX = 2568
 
+# Scanner branch update: X-axis scan direction is reversed relative to image
+# coordinates, so increasing capture column index moves left in image space.
+STITCH_X_AXIS_REVERSED = True
+
+# How capture filenames encode column index during serpentine scanning.
+# - serpentine_scan_order: row_N_col_M uses loop order M for every row.
+# - physical_grid: row_N_col_M always means physical grid column M.
+STITCH_CAPTURE_INDEXING_MODE = "serpentine_scan_order"
+
 # Preview-based local refinement around the physical model. RAW placement still
 # uses integer/even-pixel offsets to preserve the 2x2 Bayer phase.
 STITCH_REFINE_DOWNSAMPLE = 6
@@ -60,6 +69,13 @@ STITCH_REFINE_MAX_SHIFT_PX = 360
 STITCH_REFINE_MAX_CORRECTION_PX = 520
 STITCH_REFINE_MIN_OVERLAP_PX = 240
 STITCH_REFINE_MIN_SNR = 1.8
+
+# Alignment source selection for integration placement.
+# - manual_preferred (default): use manual pair alignment when fully defined,
+#   otherwise fall back to overlap refinement.
+# - hybrid: keep legacy behavior (manual absolute placement + refinement offsets).
+# - refinement_only: ignore manual alignment and use refinement only.
+STITCH_ALIGNMENT_MODE = "manual_preferred"
 
 # Optional full vector placement from manual alignment. Keep disabled until
 # it is calibrated against the active motor scan step sizes.

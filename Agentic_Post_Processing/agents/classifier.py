@@ -6,9 +6,6 @@ import re
 from pathlib import Path
 from typing import Any
 
-import cv2
-import numpy as np
-
 import config
 from models import FilmType
 
@@ -30,23 +27,17 @@ Classification rules:
 
 
 class ClassifierAgent:
-    def __init__(
-        self,
-        model: Any | None = None,
-        allow_heuristic_fallback: bool | None = None,
-    ) -> None:
+    def __init__(self, model: Any | None = None) -> None:
         self._model = model if model is not None else _build_default_model()
-        self._allow_heuristic_fallback = (
-            allow_heuristic_fallback if allow_heuristic_fallback is not None else model is None
-        )
         self.last_mode = "uninitialized"
 
     def classify(self, image_path: Path) -> FilmType:
         image_path = Path(image_path)
 
         if self._model is None:
-            self.last_mode = "heuristic"
-            return _heuristic_classify(image_path)
+            logger.warning("No model available for classifier; defaulting to %s", _DEFAULT_FILM_TYPE.value)
+            self.last_mode = "default"
+            return _DEFAULT_FILM_TYPE
 
         try:
             response = self._model.generate_content([_PROMPT, _image_part(image_path)])
@@ -58,10 +49,6 @@ class ClassifierAgent:
             raise ValueError(f"Unsupported film_type: {value}")
         except Exception as exc:
             logger.warning("Classifier failed for %s: %s", image_path.name, exc)
-            if self._allow_heuristic_fallback:
-                self._model = None
-                self.last_mode = "heuristic"
-                return _heuristic_classify(image_path)
             self.last_mode = "default"
             return _DEFAULT_FILM_TYPE
 
@@ -81,7 +68,7 @@ def _build_default_model() -> Any | None:
         from google import genai  # type: ignore
         from google.genai import types  # type: ignore
     except ImportError:
-        logger.warning("google.genai is unavailable; classifier will use heuristic fallback.")
+        logger.warning("google.genai is unavailable; classifier will return default film type.")
         return None
 
     class _ModelAdapter:
@@ -134,42 +121,3 @@ def _extract_json_text(text: str) -> str:
     if match:
         return match.group(0)
     return text
-
-
-def _heuristic_classify(image_path: Path) -> FilmType:
-    image_bgr = cv2.imread(str(image_path), cv2.IMREAD_COLOR)
-    if image_bgr is None:
-        logger.warning("Could not read %s; defaulting to %s", image_path, _DEFAULT_FILM_TYPE.value)
-        return _DEFAULT_FILM_TYPE
-
-    height, width = image_bgr.shape[:2]
-    ratio = width / max(height, 1)
-    negative_format = FilmType.NEGATIVE_35MM if ratio >= 1.25 else FilmType.NEGATIVE_120
-
-    means = image_bgr.mean(axis=(0, 1))
-    blue_mean, green_mean, red_mean = [float(v) for v in means]
-
-    border_size = max(4, min(height, width) // 20)
-    border = np.concatenate(
-        [
-            image_bgr[:border_size, :, :].reshape(-1, 3),
-            image_bgr[-border_size:, :, :].reshape(-1, 3),
-            image_bgr[:, :border_size, :].reshape(-1, 3),
-            image_bgr[:, -border_size:, :].reshape(-1, 3),
-        ],
-        axis=0,
-    )
-    inner = image_bgr[border_size:-border_size, border_size:-border_size, :]
-    if inner.size == 0:
-        inner = image_bgr
-
-    border_luma = float(border.mean())
-    inner_luma = float(inner.mean())
-    dark_border = border_luma < 55.0 and border_luma + 18.0 < inner_luma
-    strong_orange_cast = red_mean > green_mean + 12.0 and green_mean > blue_mean + 10.0
-
-    if dark_border and not strong_orange_cast:
-        return FilmType.POSITIVE_35MM if ratio >= 1.25 else FilmType.POSITIVE_120
-    if strong_orange_cast:
-        return negative_format
-    return FilmType.POSITIVE_35MM if ratio >= 1.25 else FilmType.POSITIVE_120

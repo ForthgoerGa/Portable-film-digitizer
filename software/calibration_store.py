@@ -223,13 +223,19 @@ def calibration_pair_compatibility() -> dict[str, Any]:
 
     backlight_sig = dng_signature(backlight)
     base_frame_sig = dng_signature(base_frame)
-    ok, reason = signatures_compatible(backlight_sig, base_frame_sig)
+    roi_path = dng_path(BASE_FRAME).parent / "reference_layout.json"
+    roi_available = roi_path.exists()
+    ok = bool(backlight_sig.get("available") and base_frame_sig.get("available") and roi_available)
+    reason = None if ok else "base_frame_roi_missing" if not roi_available else "DNG signature unavailable"
     return {
         "ok": ok,
         "reason": reason,
         "missing_calibrations": [],
         "backlight_signature": backlight_sig,
         "base_frame_signature": base_frame_sig,
+        "base_frame_usage": "roi_reference_only",
+        "base_frame_roi_available": roi_available,
+        "base_frame_roi_path": str(roi_path),
     }
 
 

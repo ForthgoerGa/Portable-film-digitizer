@@ -1,0 +1,380 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Film Digitizer - Dev Tools</title>
+    <link rel="stylesheet" href="style.css" />
+    <style>
+        .dev-header {
+            display: flex;
+            align-items: flex-start;
+            justify-content: space-between;
+            gap: 16px;
+            flex-wrap: wrap;
+        }
+        .dev-title-row {
+            display: flex;
+            align-items: baseline;
+            gap: 14px;
+        }
+        .back-link {
+            font-size: 0.88rem;
+            color: #2563eb;
+            text-decoration: none;
+            font-weight: 600;
+        }
+        .back-link:hover { text-decoration: underline; }
+
+        .card-header {
+            padding: 14px 20px;
+            border-bottom: 1px solid #e4ebf0;
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 12px;
+            flex-wrap: wrap;
+        }
+        .card-header h2 {
+            font-size: 1rem;
+            color: #344556;
+        }
+        .card-body {
+            padding: 16px 20px;
+            display: grid;
+            gap: 14px;
+        }
+
+        /* Calibration */
+        .calib-grid {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 14px;
+        }
+        .calib-card {
+            border: 1px solid #d6e0e7;
+            border-radius: 8px;
+            padding: 14px 16px;
+            background: #f9fbfc;
+            display: grid;
+            gap: 10px;
+        }
+        .calib-card-title {
+            font-weight: 700;
+            font-size: 0.9rem;
+            color: #344556;
+        }
+        .status-chip {
+            display: inline-flex;
+            align-items: center;
+            gap: 5px;
+            padding: 4px 10px;
+            border-radius: 999px;
+            font-size: 0.78rem;
+            font-weight: 600;
+            font-family: Consolas, "Courier New", monospace;
+            background: #eef3f6;
+            color: #526170;
+        }
+        .status-chip.ready { background: #dcfce7; color: #14532d; }
+        .status-chip.pending { background: #fef9c3; color: #713f12; }
+        .status-chip.error { background: #fee2e2; color: #7f1d1d; }
+        .branch-row {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            flex-wrap: wrap;
+            padding: 10px 14px;
+            background: #f7fafc;
+            border: 1px solid #d6e0e7;
+            border-radius: 8px;
+        }
+
+        /* ROI crop */
+        .crop-outer {
+            position: relative;
+            width: 100%;
+            background: #111;
+            border-radius: 6px;
+            overflow: hidden;
+            line-height: 0;
+        }
+        .crop-img {
+            display: block;
+            width: 100%;
+            max-height: 540px;
+            object-fit: contain;
+        }
+        .crop-canvas {
+            position: absolute;
+            top: 0; left: 0;
+            width: 100%; height: 100%;
+            cursor: crosshair;
+        }
+        .crop-placeholder {
+            min-height: 200px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            background: #eef3f6;
+            border: 1px dashed #c9d4de;
+            border-radius: 6px;
+            color: #7a8a99;
+            font-size: 0.9rem;
+            text-align: center;
+            padding: 16px;
+        }
+        .roi-coords {
+            font-family: Consolas, "Courier New", monospace;
+            font-size: 0.8rem;
+            color: #526170;
+            min-height: 1.4em;
+        }
+
+        /* Inspection */
+        .jobs-list {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 8px;
+            min-height: 36px;
+        }
+        .job-chip {
+            padding: 5px 12px;
+            border-radius: 6px;
+            border: 1px solid #d6e0e7;
+            background: #f7fafc;
+            font-size: 0.78rem;
+            font-family: Consolas, "Courier New", monospace;
+            cursor: pointer;
+            color: #344556;
+            font-weight: 600;
+            line-height: 1.4;
+        }
+        .job-chip:hover { border-color: #2563eb; }
+        .job-chip.selected { border-color: #2563eb; background: #eff6ff; color: #1d4ed8; }
+        .job-chip.state-running { border-color: #0f766e; color: #065f46; }
+        .job-chip.state-running.selected { background: #f0fdf9; }
+        .job-chip.state-failed { border-color: #d14343; color: #7f1d1d; }
+        .job-chip.state-completed { border-color: #1aa35f; color: #14532d; }
+        .job-chip-state {
+            font-weight: 400;
+            opacity: 0.7;
+        }
+        .no-jobs-hint {
+            color: #7a8a99;
+            font-size: 0.88rem;
+            align-self: center;
+        }
+
+        .inspect-panel {
+            border: 1px solid #d6e0e7;
+            border-radius: 8px;
+            padding: 16px;
+            background: #f9fbfc;
+            display: grid;
+            gap: 14px;
+        }
+        .inspect-header {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            flex-wrap: wrap;
+        }
+        .inspect-job-id {
+            font-family: Consolas, "Courier New", monospace;
+            font-size: 0.9rem;
+            color: #344556;
+            font-weight: 700;
+        }
+        .inspect-timestamp {
+            font-size: 0.78rem;
+            color: #7a8a99;
+        }
+        .inspect-artifacts {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 12px;
+        }
+        .artifact-card {
+            border: 1px solid #d6e0e7;
+            border-radius: 6px;
+            overflow: hidden;
+            background: #fff;
+        }
+        .artifact-title {
+            padding: 5px 10px;
+            font-size: 0.75rem;
+            font-weight: 700;
+            color: #526170;
+            text-transform: uppercase;
+            letter-spacing: 0.05em;
+            background: #f0f4f8;
+            border-bottom: 1px solid #d6e0e7;
+        }
+        .artifact-img {
+            width: 100%;
+            display: block;
+            object-fit: contain;
+            background: #e4ebf0;
+            min-height: 100px;
+            max-height: 300px;
+        }
+        .artifact-empty {
+            min-height: 100px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            color: #7a8a99;
+            font-size: 0.82rem;
+        }
+        .error-box {
+            padding: 10px 14px;
+            background: #fef2f2;
+            border: 1px solid #fca5a5;
+            border-radius: 6px;
+            font-family: Consolas, "Courier New", monospace;
+            font-size: 0.8rem;
+            color: #7f1d1d;
+            white-space: pre-wrap;
+            word-break: break-word;
+        }
+
+        @media (max-width: 720px) {
+            .calib-grid { grid-template-columns: 1fr; }
+            .inspect-artifacts { grid-template-columns: 1fr; }
+        }
+    </style>
+</head>
+<body>
+    <main class="container">
+
+        <header class="app-header dev-header">
+            <div class="dev-title-row">
+                    <a href="/" class="back-link">&lt; Main</a>
+                <div>
+                    <h1 style="font-size:1.5rem">Dev Tools</h1>
+                    <p class="subhead">Calibration, base ROI crop, real-time job inspection.</p>
+                </div>
+            </div>
+            <div class="sys-status">
+                <div class="sys-indicator">
+                    <span class="sys-dot" id="piScannerDot"></span>
+                    <span id="piScannerLabel" class="sys-label">Pi Scanner</span>
+                </div>
+                <div class="sys-indicator">
+                    <span id="activeJobsLabel" class="sys-label">-</span>
+                </div>
+            </div>
+        </header>
+
+        <!-- Calibration -->
+        <section class="dev-panel" style="border-radius:8px">
+            <div class="card-header">
+                <div>
+                    <h2>Calibration</h2>
+                    <p class="meta-line" style="margin-top:3px">Both DNGs needed for the negative RAW branch.</p>
+                </div>
+                <button id="refreshCalibBtn" class="ghost small-btn">Refresh</button>
+            </div>
+            <div class="card-body">
+                <div class="calib-grid">
+                    <div class="calib-card">
+                        <div class="calib-card-title">Backlight Frame</div>
+                        <div><span id="backlightChip" class="status-chip">Checking...</span></div>
+                        <div class="controls-row">
+                            <button id="backlightCapturePiBtn" class="accent small-btn">Full-Area Scan from Pi</button>
+                            <label for="backlightUpload" style="cursor:pointer">
+                                <span class="ghost" style="display:inline-block;padding:7px 12px;border:1px solid #c9d4de;border-radius:6px;font-size:0.85rem;font-weight:600;background:#f7fafc">Upload DNG</span>
+                            </label>
+                            <input id="backlightUpload" type="file" accept=".dng,image/x-adobe-dng" class="file-input" style="display:none" />
+                            <button id="backlightClearBtn" class="ghost small-btn">Clear</button>
+                        </div>
+                        <div id="backlightUploadStatus" class="camera-status"></div>
+                    </div>
+                    <div class="calib-card">
+                        <div class="calib-card-title">Base Frame</div>
+                        <div><span id="baseFrameChip" class="status-chip">Checking...</span></div>
+                        <div class="controls-row">
+                            <button id="baseFrameCapturePiBtn" class="accent small-btn">Capture from Pi</button>
+                            <label for="baseFrameUpload" style="cursor:pointer">
+                                <span class="ghost" style="display:inline-block;padding:7px 12px;border:1px solid #c9d4de;border-radius:6px;font-size:0.85rem;font-weight:600;background:#f7fafc">Upload DNG</span>
+                            </label>
+                            <input id="baseFrameUpload" type="file" accept=".dng,image/x-adobe-dng" class="file-input" style="display:none" />
+                            <button id="baseFrameClearBtn" class="ghost small-btn">Clear</button>
+                        </div>
+                        <div id="baseFrameUploadStatus" class="camera-status"></div>
+                    </div>
+                </div>
+                <div class="branch-row">
+                    <span class="dev-status-label">Negative branch</span>
+                    <span id="negBranchChip" class="status-chip">Checking...</span>
+                </div>
+            </div>
+        </section>
+
+        <!-- Base ROI crop -->
+        <section class="dev-panel" style="border-radius:8px">
+            <div class="card-header">
+                <div>
+                    <h2>Base ROI Crop</h2>
+                    <p class="meta-line" style="margin-top:3px">Drag a rectangle over the clear-base film area. Saved as <code>reference_layout.json</code> alongside the base frame DNG.</p>
+                </div>
+                <div class="controls-row">
+                    <button id="loadPreviewBtn" class="ghost">Load Preview</button>
+                    <span id="roiMsg" class="camera-status"></span>
+                </div>
+            </div>
+            <div class="card-body">
+                <div id="cropPlaceholder" class="crop-placeholder">
+                    Upload a base frame DNG first, then click <strong>Load Preview</strong>.
+                </div>
+                <div id="cropWrap" style="display:none">
+                    <div class="crop-outer">
+                        <img id="cropImg" class="crop-img" alt="Base frame preview" />
+                        <canvas id="cropCanvas" class="crop-canvas"></canvas>
+                    </div>
+                </div>
+                <div id="roiCoords" class="roi-coords"></div>
+                <div class="controls-row">
+                    <button id="saveRoiBtn" class="accent" disabled>Save ROI</button>
+                    <button id="clearRoiBtn" class="ghost">Clear ROI</button>
+                </div>
+            </div>
+        </section>
+
+        <!-- Real-time inspection -->
+        <section class="dev-panel" style="border-radius:8px">
+            <div class="card-header">
+                <h2>Real-time Inspection</h2>
+                <button id="refreshJobsBtn" class="ghost small-btn">Refresh</button>
+            </div>
+            <div class="card-body">
+                <div id="jobsListContainer" class="jobs-list">
+                    <span class="no-jobs-hint">No jobs found.</span>
+                </div>
+                <div id="inspectPanel" class="inspect-panel" style="display:none">
+                    <div class="inspect-header">
+                        <span class="dev-status-label">Job</span>
+                            <span id="inspJobId" class="inspect-job-id">-</span>
+                            <span id="inspJobState" class="status-chip">-</span>
+                        <span id="inspTimestamp" class="inspect-timestamp"></span>
+                    </div>
+                    <div class="progress-header">
+                            <span id="inspStageLabel" class="stage-label">-</span>
+                        <span id="inspProgressPct" class="progress-pct-label">0%</span>
+                    </div>
+                    <div class="progress-track">
+                        <div id="inspProgressBar" class="progress-bar unified-bar" style="width:0%"></div>
+                    </div>
+                    <div id="inspStageSteps" class="stage-steps"></div>
+                    <div id="inspMeta" class="processing-meta" style="display:none"></div>
+                    <div id="inspError" class="error-box" style="display:none"></div>
+                    <div id="inspArtifacts" class="inspect-artifacts"></div>
+                </div>
+            </div>
+        </section>
+
+    </main>
+    <script src="dev.js"></script>
+</body>
+</html>

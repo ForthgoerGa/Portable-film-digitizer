@@ -56,56 +56,6 @@
                 </article>
             </div>
         </section>
-
-        <details class="dev-panel">
-            <summary>Developer Tools</summary>
-            <div class="dev-panel-inner">
-                <section class="dev-section">
-                    <div class="dev-status-line">
-                        <span class="dev-status-label">Pi Camera</span>
-                        <span id="piCameraDevStatus" class="camera-status">Checking...</span>
-                    </div>
-                </section>
-
-                <section class="dev-section">
-                    <h2>Process Existing Capture</h2>
-                    <p class="meta-line">Run the current preview-based processing path without scanning.</p>
-                    <div class="controls-row">
-                        <span id="devSelectedInfo" class="filename-tag dev-selected-none">None selected</span>
-                        <button id="devProcessBtn" class="accent" disabled>Process Selected</button>
-                    </div>
-                    <div class="controls-row">
-                        <button id="devCaptureBtn" class="capture-btn">Capture and Import from Pi Camera</button>
-                        <span id="devCaptureStatus" class="camera-status"></span>
-                    </div>
-                    <div class="gallery-section">
-                        <div class="gallery-header">
-                            <h2>Local Captures</h2>
-                            <span id="captureCount" class="count-badge"></span>
-                        </div>
-                        <div id="captureGallery" class="gallery-grid"></div>
-                    </div>
-                </section>
-
-                <section class="dev-section">
-                    <h2>Calibration</h2>
-                    <div class="controls-row">
-                        <button id="backlightBtn" class="ghost">Capture Backlight Frame</button>
-                        <span id="backlightStatus" class="camera-status"></span>
-                    </div>
-                </section>
-
-                <section class="dev-section">
-                    <h2>Serial Port</h2>
-                    <div class="controls-row">
-                        <label for="serialPortSelect">Port</label>
-                        <select id="serialPortSelect">
-                            <option value="">Select Port</option>
-                        </select>
-                    </div>
-                </section>
-            </div>
-        </details>
     </main>
     <script src="app.js"></script>
 </body>
