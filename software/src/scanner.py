@@ -236,7 +236,7 @@ class Scanner:
         GPIO.setwarnings(False)
 
         # Create motors
-        self.motor_x = StepperMotor(STEP_X, DIR_X, invert_dir=False)
+        self.motor_x = StepperMotor(STEP_X, DIR_X, invert_dir=True)
         self.motor_y = StepperMotor(STEP_Y, DIR_Y, invert_dir=True)
 
         # Initialize camera

@@ -106,14 +106,38 @@ def integrate_captures(captures_dir: Path = CAPTURES_DIR) -> dict[str, Any]:
     )
     pair_offsets = _load_manual_pair_offsets(captures_dir)
     manual_positions = _manual_abs_positions(pair_offsets, Y_SEGMENTS, X_SEGMENTS) if pair_offsets else None
+    alignment_mode = str(getattr(scan_config, "STITCH_ALIGNMENT_MODE", "manual_preferred")).strip().lower()
+    if alignment_mode not in {"manual_preferred", "hybrid", "refinement_only"}:
+        alignment_mode = "manual_preferred"
+
+    # Keep overlap-refinement available, but default to manual placement whenever
+    # a complete manual pair-offset graph is available.
+    if alignment_mode == "hybrid":
+        active_offsets = preview_offsets
+        applied_strategy = "hybrid_manual_plus_refinement" if manual_positions is not None else "refinement_only"
+    elif alignment_mode == "refinement_only":
+        active_offsets = preview_offsets
+        applied_strategy = "refinement_only"
+    else:
+        if manual_positions is not None:
+            active_offsets = {}
+            applied_strategy = "manual_only"
+        else:
+            active_offsets = preview_offsets
+            applied_strategy = "refinement_fallback_no_manual_coverage"
+
+    alignment_refinement["configured_mode"] = alignment_mode
+    alignment_refinement["applied_strategy"] = applied_strategy
+    alignment_refinement["applied_to_placement"] = bool(active_offsets)
+    alignment_refinement["manual_positions_available"] = bool(manual_positions is not None)
     preview_origins, preview_cw, preview_ch = _resolve_tile_origins(
-        placement, manual_positions, preview_offsets, round_to_even=False
+        placement, manual_positions, active_offsets, round_to_even=False
     )
     raw_origins_dynamic, raw_cw_dynamic, raw_ch_dynamic = _resolve_tile_origins(
-        placement, manual_positions, preview_offsets, round_to_even=True
+        placement, manual_positions, active_offsets, round_to_even=True
     )
     raw_origins, raw_cw, raw_ch, raw_canvas_meta = _resolve_stable_raw_canvas(
-        placement, manual_positions, preview_offsets
+        placement, manual_positions, active_offsets
     )
     preview_crop, preview_crop_meta = _edge_alignment_crop(
         placement, preview_origins, (preview_cw, preview_ch), round_to_even=False
@@ -147,6 +171,7 @@ def integrate_captures(captures_dir: Path = CAPTURES_DIR) -> dict[str, Any]:
     manifest = {
         "created_at": time.time(),
         "grid": {"rows": Y_SEGMENTS, "cols": X_SEGMENTS},
+        "capture_indexing_mode": _capture_indexing_mode(),
         "placement": {
             "tile_width": placement.tile_width,
             "tile_height": placement.tile_height,
@@ -196,6 +221,8 @@ def integrate_captures(captures_dir: Path = CAPTURES_DIR) -> dict[str, Any]:
         "manual_alignment": {
             "pairs_defined": len(pair_offsets),
             "full_coverage": manual_positions is not None,
+            "configured_mode": alignment_mode,
+            "applied_strategy": applied_strategy,
         },
         "stitched_preview": _relative_or_none(preview_result),
         "stitched_raw": _relative_or_none(raw_result),
@@ -214,6 +241,14 @@ def integrate_captures(captures_dir: Path = CAPTURES_DIR) -> dict[str, Any]:
 
 
 def _discover_tiles(captures_dir: Path, suffixes: set[str]) -> dict[tuple[int, int], Path]:
+    return _discover_tiles_with_mode(captures_dir, suffixes, normalize_index=True)
+
+
+def _discover_tiles_with_mode(
+    captures_dir: Path,
+    suffixes: set[str],
+    normalize_index: bool,
+) -> dict[tuple[int, int], Path]:
     tiles: dict[tuple[int, int], Path] = {}
     for path in captures_dir.iterdir() if captures_dir.exists() else []:
         if not path.is_file() or path.suffix.lower() not in suffixes:
@@ -223,8 +258,28 @@ def _discover_tiles(captures_dir: Path, suffixes: set[str]) -> dict[tuple[int, i
             continue
         row = int(match.group(1))
         col = int(match.group(2))
+        if normalize_index:
+            row, col = _normalize_capture_index(row, col)
         tiles[(row, col)] = path
     return tiles
+
+
+def _capture_indexing_mode() -> str:
+    mode = str(getattr(scan_config, "STITCH_CAPTURE_INDEXING_MODE", "serpentine_scan_order")).strip().lower()
+    if mode not in {"serpentine_scan_order", "physical_grid"}:
+        return "serpentine_scan_order"
+    return mode
+
+
+def _normalize_capture_index(row: int, col: int) -> tuple[int, int]:
+    """Map filename row/col to physical grid coordinates for stitching math."""
+    if _capture_indexing_mode() != "serpentine_scan_order":
+        return row, col
+    if row < 0 or col < 0 or col >= X_SEGMENTS:
+        return row, col
+    if row % 2 == 1:
+        return row, (X_SEGMENTS - 1 - col)
+    return row, col
 
 
 def _build_placement(
@@ -317,6 +372,18 @@ def _resolve_stride(tile_width: int, tile_height: int) -> tuple[int, int, str]:
     return tile_width, tile_height, "no_overlap_default"
 
 
+def _apply_x_axis_orientation(
+    step_x_dx: int,
+    step_x_dy: int,
+    step_y_dx: int,
+    step_y_dy: int,
+) -> tuple[int, int, int, int, str]:
+    """Apply configured axis orientation to placement step vectors."""
+    if bool(getattr(scan_config, "STITCH_X_AXIS_REVERSED", False)):
+        return -int(step_x_dx), -int(step_x_dy), int(step_y_dx), int(step_y_dy), "x_axis_reversed"
+    return int(step_x_dx), int(step_x_dy), int(step_y_dx), int(step_y_dy), "x_axis_normal"
+
+
 def _resolve_step_vectors(
     tile_width: int,
     tile_height: int,
@@ -342,16 +409,28 @@ def _resolve_step_vectors(
         sx_dy = int(step_x_dy)
         sy_dx = int(step_y_dx)
         sy_dy = int(step_y_dy)
+        sx_dx, sx_dy, sy_dx, sy_dy, orientation = _apply_x_axis_orientation(
+            sx_dx,
+            sx_dy,
+            sy_dx,
+            sy_dy,
+        )
         return (
             sx_dx,
             sx_dy,
             sy_dx,
             sy_dy,
-            "configured_step_vectors_px",
+            f"configured_step_vectors_px:{orientation}",
         )
 
     stride_x, stride_y, source = _resolve_stride(tile_width, tile_height)
-    return int(stride_x), 0, 0, int(stride_y), source
+    sx_dx, sx_dy, sy_dx, sy_dy, orientation = _apply_x_axis_orientation(
+        int(stride_x),
+        0,
+        0,
+        int(stride_y),
+    )
+    return sx_dx, sx_dy, sy_dx, sy_dy, f"{source}:{orientation}"
 
 
 def _tile_origin(placement: Placement, row: int, col: int) -> tuple[int, int]:
@@ -375,40 +454,57 @@ def _tile_origin_with_offset(
 
 
 def _load_manual_pair_offsets(captures_dir: Path) -> dict:
-    """Read current-scan alignment measurements; last entry per pair wins."""
+    """Read manual alignment measurements.
+
+    Priority is current scan-local/signature-specific measurements first, then
+    reusable default profile entries for any missing pairs.
+    """
     candidates = []
+    capture_signature = _capture_signature_for_dir(captures_dir)
     scan_local = captures_dir / "alignment_measurements.json"
-    if scan_local.exists():
-        candidates.append((scan_local, None))
+    if scan_local.exists() and capture_signature:
+        candidates.append((scan_local, capture_signature, "measurements"))
 
     persistent = Path(__file__).parent / "calibration" / "alignment_measurements.json"
-    capture_signature = _capture_signature_for_dir(captures_dir)
     if persistent.exists() and capture_signature:
-        candidates.append((persistent, capture_signature))
+        candidates.append((persistent, capture_signature, "measurements"))
+
+    default_profile = Path(__file__).parent / "calibration" / "alignment_default_profile.json"
+    if default_profile.exists():
+        candidates.append((default_profile, None, "measurements"))
 
     if not candidates:
         return {}
 
     result = {}
-    for path, expected_signature in candidates:
+    for path, expected_signature, measurements_key in candidates:
         try:
             data = json.loads(path.read_text(encoding="utf-8"))
         except Exception:
             continue
-        for m in data.get("measurements", []):
+        for m in data.get(measurements_key, []):
             if expected_signature and m.get("capture_signature") != expected_signature:
                 continue
             try:
                 src = (int(m["row"]), int(m["col"]))
                 dst = (int(m["neighbor_row"]), int(m["neighbor_col"]))
-                result[(src, dst)] = (int(m["dx"]), int(m["dy"]))
+                coordinate_space = str(m.get("coordinate_space", "scan_order")).strip().lower()
+                if coordinate_space not in {"physical_grid", "physical"}:
+                    src = _normalize_capture_index(*src)
+                    dst = _normalize_capture_index(*dst)
+                result.setdefault((src, dst), (int(m["dx"]), int(m["dy"])))
             except (KeyError, ValueError, TypeError):
                 continue
     return result
 
 
 def _capture_signature_for_dir(captures_dir: Path) -> str | None:
-    tiles = _discover_tiles(captures_dir, {".jpg", ".jpeg", ".png"})
+    # Keep capture signature in filename index space so it matches main.py.
+    tiles = _discover_tiles_with_mode(
+        captures_dir,
+        {".jpg", ".jpeg", ".png"},
+        normalize_index=False,
+    )
     if not tiles:
         return None
     digest = hashlib.sha256()
@@ -506,18 +602,52 @@ def _resolve_stable_raw_canvas(
     margin = int(math.ceil(max_correction / 2)) * 2
 
     if manual_positions is not None:
-        origins, canvas_w, canvas_h = _resolve_tile_origins(
+        canvas_w = int(math.ceil((placement.canvas_width + 2 * margin) / 2)) * 2
+        canvas_h = int(math.ceil((placement.canvas_height + 2 * margin) / 2)) * 2
+        origins: dict[tuple[int, int], tuple[int, int]] = {}
+        out_of_bounds: list[str] = []
+        for row in range(placement.rows):
+            for col in range(placement.cols):
+                x, y = manual_positions[(row, col)]
+                if phase_offsets:
+                    dx, dy = phase_offsets.get((row, col), (0, 0))
+                    x += dx
+                    y += dy
+                x = int(round((x + placement.origin_x + margin) / 2)) * 2
+                y = int(round((y + placement.origin_y + margin) / 2)) * 2
+                origins[(row, col)] = (x, y)
+                if (
+                    x < 0
+                    or y < 0
+                    or x + placement.tile_width > canvas_w
+                    or y + placement.tile_height > canvas_h
+                ):
+                    out_of_bounds.append(f"row_{row}_col_{col}")
+
+        if not out_of_bounds:
+            return origins, canvas_w, canvas_h, {
+                "stable": True,
+                "reason": "fixed_margin_around_physical_model_with_manual_alignment",
+                "width": canvas_w,
+                "height": canvas_h,
+                "margin_px": margin,
+                "base_canvas_width": placement.canvas_width,
+                "base_canvas_height": placement.canvas_height,
+            }
+
+        dynamic_origins, dynamic_w, dynamic_h = _resolve_tile_origins(
             placement,
             manual_positions,
             phase_offsets,
             round_to_even=True,
         )
-        return origins, canvas_w, canvas_h, {
+        return dynamic_origins, dynamic_w, dynamic_h, {
             "stable": False,
-            "reason": "manual_alignment_canvas",
-            "width": int(canvas_w),
-            "height": int(canvas_h),
-            "margin_px": 0,
+            "reason": "manual_alignment_exceeded_fixed_margin",
+            "width": int(dynamic_w),
+            "height": int(dynamic_h),
+            "margin_px": margin,
+            "out_of_bounds_tiles": out_of_bounds,
         }
 
     origins: dict[tuple[int, int], tuple[int, int]] = {}

@@ -286,7 +286,7 @@ class ScannerCoordinator:
         Performs serpentine scanning pattern across the film.
         """
         try:
-            # Start moving right
+            # Start moving in +X scan direction.
             direction = 1
             scan_cancelled = False
 
@@ -299,16 +299,12 @@ class ScannerCoordinator:
                         scan_cancelled = True
                         break
 
-                    # The scanner moves in a serpentine path. On right-to-left
-                    # rows the physical column decreases, so capture filenames
-                    # must use the physical grid column rather than loop order.
-                    physical_col = scan_col if direction else X_SEGMENTS - 1 - scan_col
                     with self._lock:
-                        self.current_col = physical_col
+                        self.current_col = scan_col
                         self.scan_order_index = row * X_SEGMENTS + scan_col
 
                     # Capture at each grid point
-                    self.scanner.capture(row, physical_col)
+                    self.scanner.capture(row, scan_col)
                     with self._lock:
                         self.scan_order_index = row * X_SEGMENTS + scan_col + 1
 

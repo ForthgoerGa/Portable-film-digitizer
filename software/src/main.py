@@ -45,6 +45,7 @@ app = FastAPI(title="Film Digitizer Scanner API")
 SCAN_PROFILE_NAME = "standard"
 CALIBRATION_DIR = Path(__file__).parent / "calibration"
 ALIGNMENT_MEASUREMENTS_PATH = CALIBRATION_DIR / "alignment_measurements.json"
+ALIGNMENT_DEFAULT_PROFILE_PATH = CALIBRATION_DIR / "alignment_default_profile.json"
 MANUAL_CHECKPOINTS_PATH = CALIBRATION_DIR / "manual_checkpoints.json"
 PREVIEW_FRAME_PATH = CALIBRATION_DIR / "manual_preview.jpg"
 CALIBRATION_CAPTURE_DIR = CAPTURES_DIR / "calibration"
@@ -82,7 +83,32 @@ def _scan_profile() -> dict[str, Any]:
             "x": getattr(scan_config, "STITCH_TILE_STRIDE_X_PX", None),
             "y": getattr(scan_config, "STITCH_TILE_STRIDE_Y_PX", None),
         },
+        "stitch_x_axis_reversed": bool(getattr(scan_config, "STITCH_X_AXIS_REVERSED", False)),
+        "stitch_capture_indexing_mode": str(
+            getattr(scan_config, "STITCH_CAPTURE_INDEXING_MODE", "serpentine_scan_order")
+        ),
     }
+
+
+def _capture_indexing_mode() -> str:
+    mode = str(getattr(scan_config, "STITCH_CAPTURE_INDEXING_MODE", "serpentine_scan_order")).strip().lower()
+    if mode not in {"serpentine_scan_order", "physical_grid"}:
+        return "serpentine_scan_order"
+    return mode
+
+
+def _scan_col_to_physical_col(row: int, scan_col: int) -> int:
+    """Map scan-order filename columns to the physical grid column.
+
+    In serpentine mode row_N_col_M is loop order, not always physical column M.
+    The alignment UI works in physical grid coordinates so vertical neighbors
+    are true adjacent tiles even when alternate rows were captured in reverse.
+    """
+    if _capture_indexing_mode() != "serpentine_scan_order":
+        return int(scan_col)
+    if row % 2 == 1:
+        return X_SEGMENTS - 1 - int(scan_col)
+    return int(scan_col)
 
 
 def _current_capture_tiles() -> list[dict[str, Any]]:
@@ -93,11 +119,17 @@ def _current_capture_tiles() -> list[dict[str, Any]]:
         match = _TILE_RE.match(path.name)
         if not match:
             continue
+        scan_row = int(match.group(1))
+        scan_col = int(match.group(2))
+        physical_col = _scan_col_to_physical_col(scan_row, scan_col)
         stat = path.stat()
         tiles.append(
             {
-                "row": int(match.group(1)),
-                "col": int(match.group(2)),
+                "coordinate_space": "physical_grid",
+                "row": scan_row,
+                "col": physical_col,
+                "scan_row": scan_row,
+                "scan_col": scan_col,
                 "path": path.name,
                 "size": stat.st_size,
                 "modified": stat.st_mtime,
@@ -112,8 +144,10 @@ def _current_capture_signature() -> str | None:
         return None
     digest = hashlib.sha256()
     for tile in tiles:
+        scan_row = tile.get("scan_row", tile["row"])
+        scan_col = tile.get("scan_col", tile["col"])
         digest.update(
-            f"{tile['row']},{tile['col']},{tile['path']},{tile['size']},{tile['modified']:.6f}\n".encode()
+            f"{scan_row},{scan_col},{tile['path']},{tile['size']},{tile['modified']:.6f}\n".encode()
         )
     return digest.hexdigest()
 
@@ -127,11 +161,27 @@ def _read_alignment_store() -> dict[str, Any]:
         return {"measurements": []}
 
 
+def _read_default_alignment_profile() -> dict[str, Any] | None:
+    if not ALIGNMENT_DEFAULT_PROFILE_PATH.exists():
+        return None
+    try:
+        return json.loads(ALIGNMENT_DEFAULT_PROFILE_PATH.read_text(encoding="utf-8"))
+    except Exception:
+        return None
+
+
 def _write_alignment_store(payload: dict[str, Any]) -> None:
     CALIBRATION_DIR.mkdir(parents=True, exist_ok=True)
     tmp_path = ALIGNMENT_MEASUREMENTS_PATH.with_suffix(ALIGNMENT_MEASUREMENTS_PATH.suffix + ".tmp")
     tmp_path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
     tmp_path.replace(ALIGNMENT_MEASUREMENTS_PATH)
+
+
+def _write_default_alignment_profile(payload: dict[str, Any]) -> None:
+    CALIBRATION_DIR.mkdir(parents=True, exist_ok=True)
+    tmp_path = ALIGNMENT_DEFAULT_PROFILE_PATH.with_suffix(ALIGNMENT_DEFAULT_PROFILE_PATH.suffix + ".tmp")
+    tmp_path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+    tmp_path.replace(ALIGNMENT_DEFAULT_PROFILE_PATH)
 
 
 def _write_current_alignment_copy(measurements: list[dict[str, Any]]) -> None:
@@ -265,6 +315,17 @@ def get_scan_status():
     }
     """
     return coordinator.get_status()
+
+
+@app.get("/status")
+def get_worker_status():
+    """Return a lightweight scanner/camera health payload."""
+    scan_status = coordinator.get_status()
+    return {
+        "scanner_ready": scan_status.get("state") == "idle",
+        "camera_ready": bool(getattr(coordinator.scanner, "camera_available", False)),
+        "state": scan_status.get("state"),
+    }
 
 
 @app.get("/worker/scan-jobs/{job_id}")
@@ -485,13 +546,82 @@ def get_alignment_measurements():
         item for item in all_measurements
         if capture_signature is not None and item.get("capture_signature") == capture_signature
     ]
+    default_profile = _read_default_alignment_profile()
+    default_measurements = list(default_profile.get("measurements", [])) if default_profile else []
+    effective_by_pair = {}
+    for item in default_measurements:
+        key = (
+            item.get("axis"),
+            item.get("row"),
+            item.get("col"),
+            item.get("neighbor_row"),
+            item.get("neighbor_col"),
+        )
+        effective_by_pair[key] = {**item, "source": "default_profile"}
+    for item in measurements:
+        key = (
+            item.get("axis"),
+            item.get("row"),
+            item.get("col"),
+            item.get("neighbor_row"),
+            item.get("neighbor_col"),
+        )
+        effective_by_pair[key] = {**item, "source": "current_scan"}
+    effective_measurements = list(effective_by_pair.values())
     if measurements:
         _write_current_alignment_copy(measurements)
     return {
         "capture_signature": capture_signature,
         "storage_path": str(ALIGNMENT_MEASUREMENTS_PATH),
         "measurements": measurements,
+        "effective_measurements": effective_measurements,
+        "default_measurements": default_measurements,
         "all_measurement_count": len(all_measurements),
+        "default_profile": {
+            "configured": bool(default_profile),
+            "path": str(ALIGNMENT_DEFAULT_PROFILE_PATH),
+            "measurement_count": len(default_profile.get("measurements", [])) if default_profile else 0,
+            "created_at": default_profile.get("created_at") if default_profile else None,
+            "source_capture_signature": default_profile.get("source_capture_signature") if default_profile else None,
+        },
+    }
+
+
+@app.post("/calibration/alignment/default-profile")
+def save_alignment_default_profile():
+    """Promote current scan alignment measurements into the reusable default profile."""
+    capture_signature = _current_capture_signature()
+    if capture_signature is None:
+        raise HTTPException(status_code=409, detail="No current preview tiles are available for alignment")
+    payload = _read_alignment_store()
+    current_measurements = [
+        item for item in payload.get("measurements", [])
+        if item.get("capture_signature") == capture_signature
+    ]
+    if not current_measurements:
+        raise HTTPException(status_code=409, detail="No current alignment measurements to promote")
+
+    profile_measurements = []
+    for item in current_measurements:
+        promoted = dict(item)
+        promoted.pop("capture_signature", None)
+        promoted["source_capture_signature"] = capture_signature
+        promoted["profile_scope"] = "default_alignment_profile"
+        profile_measurements.append(promoted)
+
+    profile = {
+        "created_at": time.time(),
+        "source_capture_signature": capture_signature,
+        "coordinate_space": "physical_grid",
+        "scan_profile": _scan_profile(),
+        "measurements": profile_measurements,
+    }
+    _write_default_alignment_profile(profile)
+    return {
+        "status": "saved",
+        "path": str(ALIGNMENT_DEFAULT_PROFILE_PATH),
+        "measurement_count": len(profile_measurements),
+        "source_capture_signature": capture_signature,
     }
 
 
@@ -509,6 +639,7 @@ def save_alignment_measurement(request: dict):
             "created_at": time.time(),
             "capture_signature": capture_signature,
             "scan_profile": _scan_profile(),
+            "coordinate_space": str(request.get("coordinate_space", "physical_grid")),
             "axis": axis,
             "row": int(request["row"]),
             "col": int(request["col"]),
@@ -516,6 +647,10 @@ def save_alignment_measurement(request: dict):
             "neighbor_col": int(request["neighbor_col"]),
             "dx": int(request["dx"]),
             "dy": int(request["dy"]),
+            "first_scan_row": int(request.get("first_scan_row", request["row"])),
+            "first_scan_col": int(request.get("first_scan_col", request["col"])),
+            "second_scan_row": int(request.get("second_scan_row", request["neighbor_row"])),
+            "second_scan_col": int(request.get("second_scan_col", request["neighbor_col"])),
             "tile_width": int(request.get("tile_width", 0)),
             "tile_height": int(request.get("tile_height", 0)),
             "first_path": str(request.get("first_path", "")),
@@ -553,10 +688,11 @@ def save_alignment_measurement(request: dict):
 # Capture file browser endpoints
 @app.get("/captures/tiles")
 def get_capture_tiles():
-    """Return the normalized root-level preview tiles used by alignment."""
+    """Return preview tiles in physical grid coordinates for alignment."""
     tiles = _current_capture_tiles()
     return {
         "capture_signature": _current_capture_signature(),
+        "coordinate_space": "physical_grid",
         "scan_profile": _scan_profile(),
         "tiles": tiles,
         "tile_count": len(tiles),
