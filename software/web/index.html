@@ -45,18 +45,25 @@
         <section id="resultsSection" class="results hidden">
             <div class="compare-grid">
                 <article class="image-card">
-                    <h2>Raw Preview</h2>
-                    <div class="img-placeholder" id="rawPlaceholder">Waiting for raw preview.</div>
-                    <img id="rawImg" class="result-img hidden" alt="Raw scan preview" />
+                    <div class="card-title-row">
+                        <h2>Raw Tiles</h2>
+                        <span id="rawTileCount" class="tile-badge"></span>
+                    </div>
+                    <div id="rawGridPlaceholder" class="img-placeholder">Waiting for scan to start.</div>
+                    <div id="rawTileGrid" class="tile-grid hidden"></div>
                 </article>
                 <article class="image-card">
-                    <h2>Final Preview</h2>
-                    <div class="img-placeholder" id="finalPlaceholder">Waiting for final preview.</div>
-                    <img id="finalImg" class="result-img hidden" alt="Final processed image" />
+                    <div class="card-title-row">
+                        <h2>Processed</h2>
+                        <span id="procTileCount" class="tile-badge"></span>
+                    </div>
+                    <div id="procGridPlaceholder" class="img-placeholder">Waiting for processing.</div>
+                    <div id="procTileGrid" class="tile-grid hidden"></div>
+                    <img id="finalImg" class="result-img hidden" alt="Final integrated image" />
                 </article>
             </div>
         </section>
     </main>
-    <script src="app.js"></script>
+    <script src="app.js?v=2"></script>
 </body>
 </html>

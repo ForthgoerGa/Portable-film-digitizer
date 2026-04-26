@@ -28,6 +28,8 @@ try:
         X_STEPS_PER_SEG,
         Y_STEPS_PER_SEG,
         CAPTURES_DIR,
+        CAPTURE_EXTENSION,
+        PREVIEW_EXTENSION,
     )
 except ImportError:
     from scanner import Scanner
@@ -38,6 +40,8 @@ except ImportError:
         X_STEPS_PER_SEG,
         Y_STEPS_PER_SEG,
         CAPTURES_DIR,
+        CAPTURE_EXTENSION,
+        PREVIEW_EXTENSION,
     )
 
 
@@ -75,11 +79,20 @@ class ScannerCoordinator:
         self.error_message = ""
         self.integration_result: dict[str, Any] | None = None
         self.upload_url: str | None = None
+        self.tile_upload_url: str | None = None
+        self.calibration_kind: str | None = None
         self.upload_result: dict[str, Any] | None = None
+        self.tile_uploads: list[dict[str, Any]] = []
         self._lock = threading.Lock()
         self._scan_thread: Optional[threading.Thread] = None
 
-    def start_scan(self, film_format: str = "standard", upload_url: str | None = None) -> None:
+    def start_scan(
+        self,
+        film_format: str = "standard",
+        upload_url: str | None = None,
+        tile_upload_url: str | None = None,
+        calibration_kind: str | None = None,
+    ) -> None:
         """
         Start a new scanning operation.
 
@@ -101,7 +114,10 @@ class ScannerCoordinator:
             self.error_message = ""
             self.integration_result = None
             self.upload_url = upload_url
+            self.tile_upload_url = tile_upload_url
+            self.calibration_kind = calibration_kind
             self.upload_result = None
+            self.tile_uploads = []
 
             # Prepare captures directory
             if CAPTURES_DIR.exists():
@@ -145,6 +161,7 @@ class ScannerCoordinator:
                 "progress": self._calculate_progress(),
                 "artifacts": self.integration_result or {},
                 "upload": self.upload_result or {},
+                "tile_uploads": list(self.tile_uploads),
             }
 
             if self.state == ScannerState.ERROR:
@@ -180,7 +197,10 @@ class ScannerCoordinator:
             self.cancel_flag = False
             self.error_message = ""
             self.upload_url = None
+            self.tile_upload_url = None
+            self.calibration_kind = None
             self.upload_result = None
+            self.tile_uploads = []
 
     def move_motors(self, x_steps: int, y_steps: int) -> None:
         """
@@ -304,9 +324,20 @@ class ScannerCoordinator:
                         self.scan_order_index = row * X_SEGMENTS + scan_col
 
                     # Capture at each grid point
-                    self.scanner.capture(row, scan_col)
+                    capture_result = self.scanner.capture(row, scan_col)
                     with self._lock:
                         self.scan_order_index = row * X_SEGMENTS + scan_col + 1
+
+                    if capture_result and self.tile_upload_url:
+                        upload_result = self._upload_capture_tile(
+                            self.tile_upload_url,
+                            row,
+                            scan_col,
+                            Path(capture_result["raw_path"]),
+                            Path(capture_result["preview_path"]),
+                        )
+                        with self._lock:
+                            self.tile_uploads.append(upload_result)
 
                     if self._cancel_requested():
                         scan_cancelled = True
@@ -341,21 +372,30 @@ class ScannerCoordinator:
                     self.upload_result = {"status": "cancelled_returning_home"}
             else:
                 try:
-                    with self._lock:
-                        self.state = ScannerState.STITCHING
-                    integration_result = integrate_captures(CAPTURES_DIR)
-                    with self._lock:
-                        self.integration_result = integration_result
+                    if self.tile_upload_url:
+                        with self._lock:
+                            self.integration_result = self._tile_scan_artifacts()
+                            self.upload_result = {
+                                "status": "tiles_uploaded",
+                                "tile_count": len(self.tile_uploads),
+                                "mode": "per_tile",
+                            }
+                    else:
+                        with self._lock:
+                            self.state = ScannerState.STITCHING
+                        integration_result = integrate_captures(CAPTURES_DIR)
+                        with self._lock:
+                            self.integration_result = integration_result
 
-                    if self._cancel_requested():
-                        with self._lock:
-                            self.upload_result = {"status": "cancelled_returning_home"}
-                    elif self.upload_url:
-                        with self._lock:
-                            self.state = ScannerState.UPLOADING
-                        upload_result = self._upload_stitched_raw(self.upload_url, integration_result)
-                        with self._lock:
-                            self.upload_result = upload_result
+                        if self._cancel_requested():
+                            with self._lock:
+                                self.upload_result = {"status": "cancelled_returning_home"}
+                        elif self.upload_url:
+                            with self._lock:
+                                self.state = ScannerState.UPLOADING
+                            upload_result = self._upload_stitched_raw(self.upload_url, integration_result)
+                            with self._lock:
+                                self.upload_result = upload_result
                 except Exception as exc:
                     completion_error = exc
 
@@ -430,6 +470,97 @@ class ScannerCoordinator:
             "bytes": file_size,
             "elapsed_s": elapsed,
             "response": resp.text,
+        }
+
+    def _upload_capture_tile(
+        self,
+        tile_upload_url: str,
+        row: int,
+        col: int,
+        raw_path: Path,
+        preview_path: Path,
+    ) -> dict[str, Any]:
+        if _requests is None:
+            raise RuntimeError("Tile upload requires requests; install it in the scanner venv")
+        if not raw_path.exists():
+            raise RuntimeError(f"RAW tile does not exist: {raw_path}")
+        if not preview_path.exists():
+            raise RuntimeError(f"Preview tile does not exist: {preview_path}")
+
+        data = {
+            "row": str(int(row)),
+            "col": str(int(col)),
+            "total_rows": str(int(Y_SEGMENTS)),
+            "total_cols": str(int(X_SEGMENTS)),
+            "calibration_kind": self.calibration_kind or "",
+        }
+        started = time.monotonic()
+        raw_size = raw_path.stat().st_size
+        preview_size = preview_path.stat().st_size
+        print(
+            f"Uploading tile row={row} col={col}: "
+            f"{raw_size / (1024 * 1024):.1f} MiB DNG + {preview_size / 1024:.0f} KiB JPG"
+        )
+        try:
+            with raw_path.open("rb") as raw_fh, preview_path.open("rb") as preview_fh:
+                resp = _requests.post(
+                    tile_upload_url,
+                    data=data,
+                    files={
+                        "raw_file": (
+                            raw_path.name,
+                            raw_fh,
+                            mimetypes.guess_type(str(raw_path))[0] or "image/x-adobe-dng",
+                        ),
+                        "preview_file": (
+                            preview_path.name,
+                            preview_fh,
+                            mimetypes.guess_type(str(preview_path))[0] or "image/jpeg",
+                        ),
+                    },
+                    timeout=(10, _UPLOAD_TIMEOUT_S),
+                )
+                resp.raise_for_status()
+        except _requests.RequestException as exc:
+            detail = ""
+            response = getattr(exc, "response", None)
+            if response is not None:
+                detail = f" HTTP {response.status_code}: {response.text[:500]}"
+            raise RuntimeError(f"Tile upload failed: {exc}{detail}") from exc
+
+        elapsed = max(time.monotonic() - started, 1e-6)
+        return {
+            "status": "uploaded",
+            "mode": "per_tile",
+            "row": int(row),
+            "col": int(col),
+            "url": tile_upload_url,
+            "http_status": resp.status_code,
+            "raw_bytes": raw_size,
+            "preview_bytes": preview_size,
+            "elapsed_s": elapsed,
+        }
+
+    def _tile_scan_artifacts(self) -> dict[str, Any]:
+        tiles = []
+        for row in range(Y_SEGMENTS):
+            for col in range(X_SEGMENTS):
+                stem = f"row_{row}_col_{col}"
+                raw_path = CAPTURES_DIR / f"{stem}{CAPTURE_EXTENSION}"
+                preview_path = CAPTURES_DIR / f"{stem}{PREVIEW_EXTENSION}"
+                if raw_path.exists() or preview_path.exists():
+                    tiles.append(
+                        {
+                            "row": row,
+                            "col": col,
+                            "raw": raw_path.name if raw_path.exists() else None,
+                            "preview": preview_path.name if preview_path.exists() else None,
+                        }
+                    )
+        return {
+            "mode": "per_tile_raw",
+            "tile_count": len(tiles),
+            "tiles": tiles,
         }
 
     def cleanup(self) -> None:

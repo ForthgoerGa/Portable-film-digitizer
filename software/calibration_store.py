@@ -1,8 +1,8 @@
 """Persistent calibration artifact store for the PC app server.
 
-Tracks backlight and base-frame DNG captures used by the negative-film branch.
-Both server endpoints and the processing adapter consult this module so that
-calibration state is expressed once, in one place.
+Tracks the backlight and base-frame DNG captures used by the negative-film RAW
+branch. The current physical correction entry point expects both frames plus a
+reference layout when running in RAW mode.
 """
 
 from __future__ import annotations
@@ -53,6 +53,12 @@ def dng_path(kind: CalibrationKind) -> Path:
     return _ensure_dir(kind) / kind.dng_name
 
 
+def tile_set_dir(kind: CalibrationKind) -> Path:
+    path = _ensure_dir(kind) / "tiles"
+    path.mkdir(parents=True, exist_ok=True)
+    return path
+
+
 def get_dng_path_if_ready(kind: CalibrationKind) -> Path | None:
     path = dng_path(kind)
     return path if path.exists() and path.stat().st_size > 0 else None
@@ -81,6 +87,10 @@ def load_latest(kind: CalibrationKind) -> dict:
         payload["dng_filename"] = dng.name
         payload["dng_size"] = dng.stat().st_size
         payload["dng_signature"] = dng_signature(dng)
+    tile_state = load_tile_set(kind)
+    payload["tile_set_available"] = tile_state["available"]
+    payload["tile_count"] = tile_state["tile_count"]
+    payload["tile_set"] = tile_state
     return payload
 
 
@@ -91,6 +101,8 @@ def _empty_state(kind: CalibrationKind) -> dict:
         "detail": f"No {kind.name.replace('_', ' ')} capture available yet.",
         "dng_available": False,
         "dng_url": None,
+        "tile_set_available": False,
+        "tile_count": 0,
     }
 
 
@@ -146,10 +158,103 @@ def store_dng_file(
     return load_latest(kind)
 
 
+def clear_tile_set(kind: CalibrationKind) -> None:
+    path = tile_set_dir(kind)
+    if path.exists():
+        shutil.rmtree(path)
+    path.mkdir(parents=True, exist_ok=True)
+
+
+def store_tile_files(
+    kind: CalibrationKind,
+    *,
+    row: int,
+    col: int,
+    total_rows: int,
+    total_cols: int,
+    raw_tmp: Path,
+    preview_tmp: Path | None,
+    source: str,
+    extra: dict[str, Any] | None = None,
+) -> dict:
+    """Persist one calibration tile without synthesizing a stitched DNG."""
+    if not raw_tmp.exists() or raw_tmp.stat().st_size == 0:
+        raise ValueError("Calibration tile DNG is empty or missing")
+
+    directory = tile_set_dir(kind)
+    stem = f"row_{int(row)}_col_{int(col)}"
+    raw_dest = directory / f"{stem}.dng"
+    preview_dest = directory / f"{stem}.jpg"
+    shutil.move(str(raw_tmp), raw_dest)
+    if preview_tmp and preview_tmp.exists() and preview_tmp.stat().st_size > 0:
+        shutil.move(str(preview_tmp), preview_dest)
+
+    record = {
+        "configured": True,
+        "captured_at": time.time(),
+        "source": source,
+        "capture_mode": "per_tile_raw_set",
+        "expected_grid": {"rows": int(total_rows), "cols": int(total_cols)},
+    }
+    if extra:
+        record.update(extra)
+    _latest_path(kind).write_text(json.dumps(record, indent=2), encoding="utf-8")
+    return load_latest(kind)
+
+
+def load_tile_set(kind: CalibrationKind) -> dict[str, Any]:
+    directory = tile_set_dir(kind)
+    raw_tiles = sorted(directory.glob("row_*_col_*.dng"))
+    preview_tiles = sorted(directory.glob("row_*_col_*.jpg"))
+    tiles = []
+    for raw in raw_tiles:
+        tiles.append(
+            {
+                "raw": raw.name,
+                "raw_size": raw.stat().st_size,
+                "preview": f"{raw.stem}.jpg" if (directory / f"{raw.stem}.jpg").exists() else None,
+            }
+        )
+    latest = _latest_path(kind)
+    expected = None
+    if latest.exists():
+        try:
+            expected = json.loads(latest.read_text(encoding="utf-8")).get("expected_grid")
+        except Exception:
+            expected = None
+    expected_count = None
+    if expected:
+        expected_count = int(expected.get("rows", 0)) * int(expected.get("cols", 0))
+    return {
+        "available": bool(raw_tiles),
+        "directory": str(directory),
+        "tile_count": len(raw_tiles),
+        "preview_count": len(preview_tiles),
+        "expected_count": expected_count,
+        "complete": bool(expected_count and len(raw_tiles) >= expected_count),
+        "tiles": tiles,
+    }
+
+
+def matching_tile_dng(kind: CalibrationKind, source_tile: Path) -> Path | None:
+    """Return the calibration tile with the same row/col stem as a scan tile."""
+    candidate = tile_set_dir(kind) / f"{source_tile.stem}.dng"
+    return candidate if candidate.exists() and candidate.stat().st_size > 0 else None
+
+
+def representative_tile_dng(kind: CalibrationKind) -> Path | None:
+    """Return one tile DNG for readiness/signature checks."""
+    tiles = sorted(tile_set_dir(kind).glob("row_*_col_*.dng"))
+    return tiles[0] if tiles else None
+
+
 def clear(kind: CalibrationKind) -> dict:
     target = dng_path(kind)
     if target.exists():
         target.unlink()
+    tiles = tile_set_dir(kind)
+    if tiles.exists():
+        shutil.rmtree(tiles)
     latest = _latest_path(kind)
     if latest.exists():
         latest.unlink()
@@ -205,7 +310,8 @@ def signatures_compatible(*signatures: dict[str, Any]) -> tuple[bool, str | None
 
 
 def calibration_pair_compatibility() -> dict[str, Any]:
-    backlight = get_dng_path_if_ready(BACKLIGHT)
+    backlight_tile = representative_tile_dng(BACKLIGHT)
+    backlight = backlight_tile or get_dng_path_if_ready(BACKLIGHT)
     base_frame = get_dng_path_if_ready(BASE_FRAME)
     missing = []
     if backlight is None:
@@ -225,17 +331,21 @@ def calibration_pair_compatibility() -> dict[str, Any]:
     base_frame_sig = dng_signature(base_frame)
     roi_path = dng_path(BASE_FRAME).parent / "reference_layout.json"
     roi_available = roi_path.exists()
-    ok = bool(backlight_sig.get("available") and base_frame_sig.get("available") and roi_available)
-    reason = None if ok else "base_frame_roi_missing" if not roi_available else "DNG signature unavailable"
+    ok, reason = signatures_compatible(backlight_sig, base_frame_sig)
+    if ok and not roi_available:
+        ok = False
+        reason = "missing_reference_layout"
     return {
         "ok": ok,
         "reason": reason,
         "missing_calibrations": [],
         "backlight_signature": backlight_sig,
         "base_frame_signature": base_frame_sig,
-        "base_frame_usage": "roi_reference_only",
+        "backlight_usage": "per_tile_backlight_set" if backlight_tile else "single_dng",
+        "base_frame_usage": "reference_layout_required",
         "base_frame_roi_available": roi_available,
         "base_frame_roi_path": str(roi_path),
+        "base_detection": "reference_layout",
     }
 
 

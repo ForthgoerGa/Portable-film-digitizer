@@ -24,6 +24,8 @@ let selectedJobId = null;
 let jobPoller = null;
 let allJobs = [];
 
+let _backlightScanPoller = null;
+
 // DOM refs
 
 const piScannerDot    = document.getElementById("piScannerDot");
@@ -93,17 +95,34 @@ async function refreshCalibration() {
         const data = await (await fetch("/api/dev/calibration/summary")).json();
         const bl = data.backlight;
         const bf = data.base_frame;
-        const blReady = !!(bl && bl.dng_available);
+
+        // Backlight: tile-set awareness — prefer tile set over single DNG
+        const blTs = bl && bl.tile_set;
+        const blTileComplete = !!(blTs && blTs.complete);
+        const blTilePartial = !!(blTs && blTs.available && !blTs.complete);
+        const blDngReady = !!(bl && bl.dng_available);
+        const blReady = blTileComplete || blDngReady;
+        let blLabel;
+        if (blTileComplete) {
+            blLabel = `Ready — ${blTs.tile_count} tiles`;
+        } else if (blTilePartial) {
+            blLabel = `Partial — ${blTs.tile_count}/${blTs.expected_count ?? "?"} tiles`;
+        } else if (blDngReady) {
+            const sz = bl.dng_size ? ` (${Math.round(bl.dng_size / 1024)} KB)` : "";
+            blLabel = `Ready (single DNG${sz})`;
+        } else {
+            blLabel = "Not configured";
+        }
+        applyChip(backlightChip, !!(bl && bl.configured), blReady, blLabel);
+
         const bfReady = !!(bf && bf.dng_available);
-        const blSize = blReady && bl.dng_size ? ` (${Math.round(bl.dng_size / 1024)} KB)` : "";
         const bfSize = bfReady && bf.dng_size ? ` (${Math.round(bf.dng_size / 1024)} KB)` : "";
-        applyChip(backlightChip, !!(bl && bl.configured), blReady, blReady ? `Ready${blSize}` : "Not configured");
         applyChip(baseFrameChip, !!(bf && bf.configured), bfReady, bfReady ? `Ready${bfSize}` : "Not configured");
         applyChip(
             negBranchChip,
             data.negative_branch_ready,
             data.negative_branch_ready,
-            data.negative_branch_ready ? "Ready to run" : "Waiting for both DNGs",
+            data.negative_branch_ready ? "Ready to run" : "Waiting for backlight + base frame + ROI",
         );
         loadPreviewBtn.disabled = !bfReady;
         if (!bfReady) {
@@ -135,10 +154,12 @@ async function uploadCalibDng(kind, file, statusEl) {
 }
 
 async function captureCalibrationFromPi(kind, statusEl) {
-    const label = kind === "backlight" ? "backlight" : "base frame";
-    statusEl.textContent = kind === "backlight"
-        ? "Running full-area backlight scan on Pi..."
-        : `Capturing ${label} on Pi...`;
+    if (kind === "backlight") {
+        await _startBacklightScan(statusEl);
+        return;
+    }
+    // base frame: single blocking capture
+    statusEl.textContent = "Capturing base frame on Pi...";
     backlightCapturePiBtn.disabled = true;
     baseFrameCapturePiBtn.disabled = true;
     try {
@@ -146,17 +167,78 @@ async function captureCalibrationFromPi(kind, statusEl) {
         const data = await resp.json();
         if (!resp.ok) throw new Error(data.detail || "Capture failed");
         const pos = data.pi_response && data.pi_response.position;
-        const mode = data.capture_mode === "full_area_stitched_raw" ? " full-area stitched raw" : "";
         const suffix = pos ? ` at X=${pos.x}, Y=${pos.y}` : "";
-        statusEl.textContent = `Captured ${label}${mode}${suffix}.`;
+        statusEl.textContent = `Captured base frame${suffix}.`;
         await refreshCalibration();
-        if (kind === "base_frame") await loadCurrentRoi();
+        await loadCurrentRoi();
     } catch (err) {
         statusEl.textContent = `Error: ${err.message}`;
     } finally {
         backlightCapturePiBtn.disabled = false;
         baseFrameCapturePiBtn.disabled = false;
     }
+}
+
+async function _startBacklightScan(statusEl) {
+    statusEl.textContent = "Starting backlight tile scan on Pi...";
+    backlightCapturePiBtn.disabled = true;
+    backlightClearBtn.disabled = true;
+    try {
+        const resp = await fetch("/api/dev/calibration/backlight/capture-from-pi", { method: "POST" });
+        const data = await resp.json();
+        if (resp.status === 409) {
+            // Already running — just attach poller to monitor it
+            statusEl.textContent = "Scan already in progress — monitoring...";
+        } else if (!resp.ok) {
+            throw new Error(data.detail || "Scan start failed");
+        } else {
+            statusEl.textContent = "Scan started — waiting for tiles...";
+        }
+        _startBacklightScanPoller(statusEl);
+    } catch (err) {
+        statusEl.textContent = `Error: ${err.message}`;
+        backlightCapturePiBtn.disabled = false;
+        backlightClearBtn.disabled = false;
+    }
+}
+
+function _startBacklightScanPoller(statusEl) {
+    if (_backlightScanPoller) clearInterval(_backlightScanPoller);
+    _backlightScanPoller = setInterval(async () => {
+        try {
+            const state = await (await fetch("/api/dev/calibration/backlight/scan-status")).json();
+            if (state.running) {
+                const count = state.tile_count ?? 0;
+                const total = state.expected_count ? `/${state.expected_count}` : "";
+                statusEl.textContent = `Scanning: ${count}${total} tiles received...`;
+            } else {
+                clearInterval(_backlightScanPoller);
+                _backlightScanPoller = null;
+                backlightCapturePiBtn.disabled = false;
+                backlightClearBtn.disabled = false;
+                if (state.error) {
+                    statusEl.textContent = `Scan error: ${state.error}`;
+                } else {
+                    const count = state.tile_count ?? 0;
+                    const completeTag = state.complete ? " (complete)" : "";
+                    statusEl.textContent = `Scan done — ${count} tile${count !== 1 ? "s" : ""} stored${completeTag}.`;
+                }
+                await refreshCalibration();
+            }
+        } catch (_) { /* network hiccup — keep polling */ }
+    }, 1500);
+}
+
+async function _checkBacklightScanOnLoad() {
+    try {
+        const state = await (await fetch("/api/dev/calibration/backlight/scan-status")).json();
+        if (state.running) {
+            backlightCapturePiBtn.disabled = true;
+            backlightClearBtn.disabled = true;
+            backlightUploadStatus.textContent = "Scan in progress (resumed)...";
+            _startBacklightScanPoller(backlightUploadStatus);
+        }
+    } catch (_) {}
 }
 
 async function clearCalibration(kind, statusEl) {
@@ -510,3 +592,4 @@ refreshCalibration();
 setInterval(refreshCalibration, 15000);
 refreshJobs();
 setInterval(refreshJobs, 3000);
+_checkBacklightScanOnLoad();

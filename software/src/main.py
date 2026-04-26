@@ -251,19 +251,35 @@ def start_scan(request: dict):
     if profile != SCAN_PROFILE_NAME:
         raise HTTPException(status_code=400, detail="Only the standard scan profile is supported")
     upload_url = request.get("upload_url")
+    upload_mode = str(request.get("upload_mode", "")).strip().lower()
+    tile_upload_url = request.get("tile_upload_url")
+    calibration_kind = request.get("calibration_kind")
     if not upload_url:
         job_id = request.get("job_id")
         pc_base_url = request.get("pc_base_url") or os.getenv("PC_APP_URL")
-        if job_id and pc_base_url:
+        if job_id and pc_base_url and upload_mode != "tiles":
             upload_url = f"{pc_base_url.rstrip('/')}/internal/jobs/{job_id}/receive_stitched_raw"
+    if not tile_upload_url:
+        job_id = request.get("job_id")
+        pc_base_url = request.get("pc_base_url") or os.getenv("PC_APP_URL")
+        if upload_mode == "tiles" and job_id and pc_base_url:
+            tile_upload_url = f"{pc_base_url.rstrip('/')}/internal/jobs/{job_id}/receive_tile"
+        elif upload_mode == "tiles" and calibration_kind and pc_base_url:
+            tile_upload_url = f"{pc_base_url.rstrip('/')}/internal/calibration/{calibration_kind}/receive_tile"
 
     try:
-        coordinator.start_scan(SCAN_PROFILE_NAME, upload_url=upload_url)
+        coordinator.start_scan(
+            SCAN_PROFILE_NAME,
+            upload_url=None if tile_upload_url else upload_url,
+            tile_upload_url=tile_upload_url,
+            calibration_kind=calibration_kind,
+        )
         return {
             "status": "started",
             "profile": SCAN_PROFILE_NAME,
             "scan_config": _scan_profile(),
-            "upload_enabled": bool(upload_url),
+            "upload_enabled": bool(upload_url or tile_upload_url),
+            "upload_mode": "tiles" if tile_upload_url else "stitched_raw",
         }
     except RuntimeError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc

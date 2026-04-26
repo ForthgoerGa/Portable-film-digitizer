@@ -314,17 +314,21 @@ class Scanner:
             or self.motor_y.state.mode == MotorMode.MOVING
         )
 
-    def capture(self, row: int, col: int) -> None:
+    def capture(self, row: int, col: int) -> dict[str, str] | None:
         """Capture an image at the specified grid position."""
         if not self.camera_available:
             print("Camera not available, skipping capture")
-            return
+            return None
         CAPTURES_DIR.mkdir(parents=True, exist_ok=True)
         stem = f"row_{row}_col_{col}"
         raw_filename = CAPTURES_DIR / f"{stem}{CAPTURE_EXTENSION}"
         preview_filename = CAPTURES_DIR / f"{stem}{PREVIEW_EXTENSION}"
         self.capture_to_files(raw_filename, preview_filename)
         print(f"Captured {raw_filename} and {preview_filename}")
+        return {
+            "raw_path": str(raw_filename),
+            "preview_path": str(preview_filename),
+        }
 
     def capture_to_files(self, raw_filename: Path, preview_filename: Path) -> None:
         """Capture one fixed-control RAW DNG plus one browser preview JPEG."""

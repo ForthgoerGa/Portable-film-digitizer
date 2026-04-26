@@ -6,11 +6,8 @@ import os
 from pathlib import Path
 from typing import Any
 
-import cv2
 import numpy as np
 
-from negative_physical import color_refinement as stage3_color_refinement
-from negative_physical import perceptual_tone as stage2_perceptual_tone
 from negative_physical.camera_color import (
     STAGE10_MATRIX_PRESETS,
     apply_stage10_soft_reference_mapping,
@@ -30,7 +27,7 @@ from negative_physical.negative_inversion import (
     save_base_roi_overlay,
 )
 from negative_physical.perceptual_tone import apply_stage2_perceptual_tone_base
-from negative_physical.raw_io import load_raw_bayer
+from negative_physical.raw_io import crop_raw_bayer_frame, load_raw_bayer
 from negative_physical.reference_layout import load_reference_layout, rois_to_dicts
 from negative_physical.render_preview import (
     demosaic_to_rgb,
@@ -78,6 +75,16 @@ def main() -> None:
     parser.add_argument("--reference-layout", type=Path, default=None)
     parser.add_argument("--base-frame", type=Path, default=None)
     parser.add_argument("--frame", type=Path, action="append", default=None)
+    parser.add_argument(
+        "--film-content-bbox",
+        type=str,
+        default=None,
+        help=(
+            "Optional RAW-coordinate bbox x0,y0,x1,y1. When set, only this "
+            "film-content crop is processed; backlight is cropped to the same "
+            "bbox before flat-field modeling."
+        ),
+    )
     parser.add_argument(
         "--flat-strength",
         type=float,
@@ -141,27 +148,6 @@ def main() -> None:
         help="Deprecated compatibility flag; VLM evaluator is off by default.",
     )
     parser.add_argument("--preview-gamma", type=float, default=2.2)
-    parser.add_argument(
-        "--max-processing-side",
-        type=int,
-        default=6000,
-        help=(
-            "Maximum long side for RGB-domain negative stages. Flat-field and "
-            "demosaic still use the RAW input; downscaling here prevents "
-            "multi-gigabyte intermediates for full-area stitched DNGs. Set 0 "
-            "to keep full size."
-        ),
-    )
-    parser.add_argument(
-        "--skip-intermediate-previews",
-        action="store_true",
-        help="Only write the final processed image and metadata; skip stage preview PNGs.",
-    )
-    parser.add_argument(
-        "--skip-flat-corrected-preview",
-        action="store_true",
-        help="Skip the flat-corrected debug preview PNG.",
-    )
     parser.add_argument("--density-percentile", type=float, default=99.0)
     parser.add_argument(
         "--inversion-curve-strength",
@@ -412,6 +398,16 @@ def main() -> None:
         help="Skip Stage 4 step previews and save only final preview/master outputs.",
     )
     parser.add_argument(
+        "--skip-intermediate-previews",
+        action="store_true",
+        help="Skip intermediate visual PNGs and keep only final frame output plus report.",
+    )
+    parser.add_argument(
+        "--skip-flat-corrected-preview",
+        action="store_true",
+        help="Skip flat-corrected debug preview PNGs.",
+    )
+    parser.add_argument(
         "--skip-npy",
         action="store_true",
         help="Write PNG previews only and skip large .npy intermediate arrays.",
@@ -420,14 +416,6 @@ def main() -> None:
         "--skip-linear16",
         action="store_true",
         help="Skip large 16-bit PNG intermediates and write visual-check PNGs only.",
-    )
-    parser.add_argument(
-        "--verify-stage23-contract-only",
-        action="store_true",
-        help=(
-            "Run a synthetic Stage 2/3 color-space contract smoke test and exit. "
-            "This does not process RAW captures."
-        ),
     )
     args = parser.parse_args()
     if args.flat_strength < 0.0:
@@ -530,12 +518,6 @@ def main() -> None:
         parser.error("--stage4-final-softness-sigma must be > 0")
     if args.stage4_final_sharpen_amount < 0.0:
         parser.error("--stage4-final-sharpen-amount must be >= 0")
-    if args.verify_stage23_contract_only:
-        verification = _run_stage23_contract_verification()
-        print(json.dumps(verification, indent=2))
-        if not verification["all_passed"]:
-            raise SystemExit(1)
-        return
 
     input_dir = args.input_dir.resolve()
     output_dir = args.output_dir.resolve()
@@ -546,6 +528,7 @@ def main() -> None:
     ).resolve()
     reference_rois = rois_to_dicts(load_reference_layout(reference_layout))
     frame_paths = _resolve_frame_paths(input_dir, args.frame, base_frame_path)
+    film_content_bbox = _parse_bbox_arg(args.film_content_bbox)
     agent_evaluator_enabled = bool(args.agent_evaluator and not args.no_agent_evaluator)
     strength_search_enabled = bool(agent_evaluator_enabled or args.max_iterations > 1)
 
@@ -632,8 +615,6 @@ def main() -> None:
         "flat_field_strength": float(args.flat_strength),
         "flat_sigma_frac": float(args.flat_sigma_frac),
         "flat_max_side": int(args.flat_max_side),
-        "max_processing_side": int(args.max_processing_side),
-        "save_intermediate_previews": not bool(args.skip_intermediate_previews),
         "max_iterations": int(args.max_iterations),
         "strength_search_enabled": strength_search_enabled,
         "agent_evaluator_enabled": agent_evaluator_enabled,
@@ -697,12 +678,15 @@ def main() -> None:
         "final_export_enabled": True,
         "save_npy": not bool(args.skip_npy),
         "save_linear16": not bool(args.skip_linear16),
+        "save_intermediate_previews": not bool(args.skip_intermediate_previews),
+        "save_flat_corrected_preview": not bool(args.skip_flat_corrected_preview),
         "backlight_selection": {
             "explicit_path": str(args.backlight_frame.resolve()) if args.backlight_frame else None,
             "method": "explicit" if args.backlight_frame else "auto_discovered",
         },
         "reference_layout": str(reference_layout),
         "reference_rois": reference_rois,
+        "film_content_bbox": film_content_bbox,
         "base_reference": None,
         "base_frame_result": None,
         "frames": [],
@@ -710,7 +694,12 @@ def main() -> None:
     }
 
     print(f"Loading backlight flat-field frame: {backlight_path}")
-    flat_frame = load_raw_bayer(backlight_path)
+    flat_frame_full = load_raw_bayer(backlight_path)
+    flat_frame = (
+        crop_raw_bayer_frame(flat_frame_full, film_content_bbox, label="film_content_flat")
+        if film_content_bbox is not None
+        else flat_frame_full
+    )
     flat_model = build_flat_model(
         flat_frame,
         sigma_frac=args.flat_sigma_frac,
@@ -721,11 +710,12 @@ def main() -> None:
 
     if not args.skip_npy:
         np.save(output_dir / "flat_illumination_map.npy", flat_model.illumination_map)
-    save_illumination_preview(
-        flat_model.illumination_map,
-        flat_model.cfa_pattern,
-        output_dir / "flat_illumination_preview.png",
-    )
+    if not args.skip_intermediate_previews:
+        save_illumination_preview(
+            flat_model.illumination_map,
+            flat_model.cfa_pattern,
+            output_dir / "flat_illumination_preview.png",
+        )
 
     evaluator = None
     if strength_search_enabled:
@@ -738,73 +728,51 @@ def main() -> None:
         )
 
     print(f"Processing base reference frame: {base_frame_path.name}")
-    base_frame = load_raw_bayer(base_frame_path)
-    # The base frame is a reference sample, not a full scan target. It may be a
-    # single tile or crop-sized DNG while the active frame/backlight are stitched
-    # full-area DNGs. Therefore it must not go through full-frame flat-field or
-    # downstream image processing. We only demosaic the normalized Bayer data
-    # and sample the configured base ROI to estimate the film-base RGB.
-    base_rgb_linear = demosaic_to_rgb(base_frame.normalized_bayer, base_frame.cfa_pattern)
-    base_frame_result = {
-        "frame": str(base_frame_path),
-        "mode": "base_roi_reference_only",
-        "flat_field_applied": False,
-        "stage_processing_applied": False,
-        "width": int(base_frame.width),
-        "height": int(base_frame.height),
-        "warnings": [],
-    }
+    base_frame_full = load_raw_bayer(base_frame_path)
+    base_frame, base_flat_frame, base_reference_rois = _prepare_base_reference_frames(
+        base_frame_full,
+        flat_frame_full,
+        reference_rois,
+    )
+    base_flat_model = build_flat_model(
+        base_flat_frame,
+        sigma_frac=args.flat_sigma_frac,
+        max_side=args.flat_max_side,
+    )
+    base_frame_result = _process_frame_with_evaluator(
+        base_frame,
+        base_flat_model,
+        evaluator,
+        output_dir,
+        reference_rois,
+        initial_strength=args.flat_strength,
+        max_iterations=args.max_iterations,
+        min_strength=args.min_flat_strength,
+        max_strength=args.max_flat_strength,
+        preview_gamma=args.preview_gamma,
+        strength_search_enabled=strength_search_enabled,
+        save_npy=not args.skip_npy,
+        save_linear16=not args.skip_linear16,
+        save_flat_corrected_preview=not args.skip_flat_corrected_preview,
+    )
+    base_rgb_linear = _rgb_for_selected_flat_result(base_frame, base_flat_model, base_frame_result)
     base_reference = estimate_base_reference(
         base_rgb_linear,
-        reference_rois,
+        base_reference_rois,
         source_frame=str(base_frame_path),
         roi_name="base",
     )
-    save_base_roi_overlay(
-        base_rgb_linear,
-        base_reference,
-        output_dir / "base_reference_roi_overlay.png",
-    )
-    report["base_reference"] = base_reference_to_dict(base_reference)
-    report["base_frame_result"] = base_frame_result
-    report["warnings"].extend(base_frame_result.get("warnings", []))
-
-    for frame_path in frame_paths:
-        print(f"Processing frame: {frame_path.name}")
-        frame = load_raw_bayer(frame_path)
-        frame_result, frame_rgb_linear = _process_frame_with_evaluator(
-            frame,
-            flat_model,
-            evaluator,
-            output_dir,
-            reference_rois,
-            initial_strength=args.flat_strength,
-            max_iterations=args.max_iterations,
-            min_strength=args.min_flat_strength,
-            max_strength=args.max_flat_strength,
-            preview_gamma=args.preview_gamma,
-            strength_search_enabled=strength_search_enabled,
-            save_npy=not args.skip_npy,
-            save_linear16=not args.skip_linear16,
-            save_flat_corrected_preview=not args.skip_flat_corrected_preview,
+    if not args.skip_intermediate_previews:
+        save_base_roi_overlay(
+            base_rgb_linear,
+            base_reference,
+            output_dir / "base_reference_roi_overlay.png",
         )
-        frame_rgb_linear, resize_meta = _resize_rgb_for_processing(
-            frame_rgb_linear,
-            max_side=args.max_processing_side,
-        )
-        if resize_meta["resized"]:
-            frame_result["rgb_processing_resize"] = resize_meta
-            report["warnings"].append(
-                "RGB-domain stages ran on resized data to avoid full-area memory exhaustion: "
-                f"{resize_meta['source_width']}x{resize_meta['source_height']} -> "
-                f"{resize_meta['output_width']}x{resize_meta['output_height']}"
-            )
         _save_negative_stage_outputs(
-            frame=frame,
-            flat_model=flat_model,
-            frame_result=frame_result,
+            frame=base_frame,
+            flat_model=base_flat_model,
+            frame_result=base_frame_result,
             base_reference=base_reference,
-            rgb_linear=frame_rgb_linear,
             output_dir=output_dir,
             preview_gamma=args.preview_gamma,
             density_percentile=args.density_percentile,
@@ -857,9 +825,98 @@ def main() -> None:
             save_stage3_debug_png=not args.skip_stage3_debug_png,
             stage4_params=stage4_params,
             save_stage4_debug_png=not args.skip_stage4_debug_png,
-            save_intermediate_previews=not args.skip_intermediate_previews,
             save_npy=not args.skip_npy,
             save_linear16=not args.skip_linear16,
+            save_intermediate_previews=True,
+        )
+    report["base_reference"] = base_reference_to_dict(base_reference)
+    report["base_frame_result"] = base_frame_result
+    report["warnings"].extend(base_frame_result.get("warnings", []))
+
+    for frame_path in frame_paths:
+        print(f"Processing frame: {frame_path.name}")
+        frame_full = load_raw_bayer(frame_path)
+        frame = (
+            crop_raw_bayer_frame(frame_full, film_content_bbox, label="film_content")
+            if film_content_bbox is not None
+            else frame_full
+        )
+        frame_result = _process_frame_with_evaluator(
+            frame,
+            flat_model,
+            evaluator,
+            output_dir,
+            reference_rois,
+            initial_strength=args.flat_strength,
+            max_iterations=args.max_iterations,
+            min_strength=args.min_flat_strength,
+            max_strength=args.max_flat_strength,
+            preview_gamma=args.preview_gamma,
+            strength_search_enabled=strength_search_enabled,
+            save_npy=not args.skip_npy,
+            save_linear16=not args.skip_linear16,
+            save_flat_corrected_preview=not args.skip_flat_corrected_preview,
+        )
+        _save_negative_stage_outputs(
+            frame=frame,
+            flat_model=flat_model,
+            frame_result=frame_result,
+            base_reference=base_reference,
+            output_dir=output_dir,
+            preview_gamma=args.preview_gamma,
+            density_percentile=args.density_percentile,
+            inversion_curve_strength=args.inversion_curve_strength,
+            color_unmix_matrix=args.color_unmix_matrix,
+            color_unmix_strength=args.color_unmix_strength,
+            color_neutral_balance=not args.no_color_neutral_balance,
+            inversion_channel_gains=args.inversion_channel_gains,
+            inversion_output_percentile=args.inversion_output_percentile,
+            stage10_matrix_preset=args.stage10_matrix_preset,
+            stage10_empirical_matrix=args.stage10_empirical_matrix,
+            stage10_gray_anchor_enabled=not args.disable_stage10_gray_anchor,
+            stage10_gray_anchor_percentile=args.stage10_gray_anchor_percentile,
+            stage10_gray_anchor_strength=args.stage10_gray_anchor_strength,
+            stage10_gray_anchor_eps=args.stage10_gray_anchor_eps,
+            stage10_soft_matrix_enabled=not args.disable_stage10_soft_matrix,
+            stage10_soft_matrix_strength=args.stage10_soft_matrix_strength,
+            stage10_neutral_damp_enabled=not args.disable_stage10_neutral_damp,
+            stage10_neutral_damp_strength=args.stage10_neutral_damp_strength,
+            stage10_neutral_damp_sigma=args.stage10_neutral_damp_sigma,
+            stage10_red_guard_enabled=not args.disable_stage10_red_guard,
+            stage10_red_guard_threshold=args.stage10_red_guard_threshold,
+            stage10_red_guard_strength=args.stage10_red_guard_strength,
+            stage2_gray_norm_enabled=not args.disable_stage2_gray_norm,
+            stage2_gray_norm_percentile=args.stage2_gray_norm_percentile,
+            stage2_gray_norm_method=args.stage2_gray_norm_method,
+            stage2_gray_norm_strength=args.stage2_gray_norm_strength,
+            stage2_gray_norm_eps=args.stage2_gray_norm_eps,
+            stage2_perceptual_space_enabled=not args.disable_stage2_perceptual_space,
+            stage2_lab_input_mode=args.stage2_lab_input_mode,
+            stage2_lab_input_percentile=args.stage2_lab_input_percentile,
+            stage2_lab_input_gamma=args.stage2_lab_input_gamma,
+            stage2_lab_input_eps=args.stage2_lab_input_eps,
+            stage2_zoned_tone_enabled=not args.disable_stage2_zoned_tone,
+            stage2_shadow_threshold=args.stage2_shadow_threshold,
+            stage2_highlight_threshold=args.stage2_highlight_threshold,
+            stage2_shadow_gamma=args.stage2_shadow_gamma,
+            stage2_mid_sigmoid_k=args.stage2_mid_sigmoid_k,
+            stage2_mid_sigmoid_x0=args.stage2_mid_sigmoid_x0,
+            stage2_highlight_local_strength=args.stage2_highlight_local_strength,
+            stage2_highlight_rolloff_enabled=not args.disable_stage2_highlight_rolloff,
+            stage2_highlight_rolloff_alpha=args.stage2_highlight_rolloff_alpha,
+            stage2_highlight_rolloff_power=args.stage2_highlight_rolloff_power,
+            stage2_preview_enabled=not args.disable_stage2_preview,
+            stage2_preview_percentile=args.stage2_preview_percentile,
+            stage2_preview_gamma=args.stage2_preview_gamma,
+            stage2_preview_eps=args.stage2_preview_eps,
+            save_stage2_debug_png=not args.skip_stage2_debug_png,
+            stage3_params=stage3_params,
+            save_stage3_debug_png=not args.skip_stage3_debug_png,
+            stage4_params=stage4_params,
+            save_stage4_debug_png=not args.skip_stage4_debug_png,
+            save_npy=not args.skip_npy,
+            save_linear16=not args.skip_linear16,
+            save_intermediate_previews=not args.skip_intermediate_previews,
         )
         report["frames"].append(frame_result)
         report["warnings"].extend(frame_result.get("warnings", []))
@@ -884,8 +941,7 @@ def _process_frame_with_evaluator(
     save_npy: bool,
     save_linear16: bool,
     save_flat_corrected_preview: bool,
-) -> tuple[dict[str, Any], np.ndarray]:
-    """Returns (diagnostics_dict, rgb_linear) to avoid recomputing flat+demosaic downstream."""
+) -> dict[str, Any]:
     stem = Path(frame.path).stem
     strength = _clamp_strength(initial_strength, min_strength, max_strength)
     if not strength_search_enabled:
@@ -914,7 +970,7 @@ def _process_frame_with_evaluator(
         final_diagnostics["passed"] = None
         final_diagnostics["attempts"] = []
         print(f"  flat strength={strength:.3f} single-pass")
-        return final_diagnostics, rgb_linear
+        return final_diagnostics
 
     if evaluator is None:
         raise RuntimeError("Strength search requires an evaluator instance.")
@@ -1005,7 +1061,45 @@ def _process_frame_with_evaluator(
     final_diagnostics["selected_score"] = float(best_attempt["evaluation"]["score"])
     final_diagnostics["passed"] = bool(best_attempt["evaluation"]["passed"])
     final_diagnostics["attempts"] = attempts
-    return final_diagnostics, rgb_linear
+    return final_diagnostics
+
+
+def _prepare_base_reference_frames(
+    base_frame,
+    flat_frame,
+    reference_rois: list[dict[str, Any]],
+):
+    base_roi = _first_roi_bbox(reference_rois, preferred_name="base")
+    if base_roi is None:
+        return base_frame, flat_frame, reference_rois
+
+    base_crop = crop_raw_bayer_frame(base_frame, base_roi, label="base_reference")
+    flat_crop = crop_raw_bayer_frame(flat_frame, base_roi, label="base_reference_flat")
+    crop_roi = [
+        {
+            "name": "base",
+            "bbox": [0, 0, int(base_crop.width), int(base_crop.height)],
+            "source_format": "derived_crop",
+            "raw_payload": {
+                "source_bbox": [int(v) for v in base_roi],
+            },
+        }
+    ]
+    return base_crop, flat_crop, crop_roi
+
+
+def _first_roi_bbox(
+    reference_rois: list[dict[str, Any]],
+    *,
+    preferred_name: str,
+) -> list[int] | None:
+    for roi in reference_rois:
+        if roi.get("name") == preferred_name and isinstance(roi.get("bbox"), list):
+            return [int(v) for v in roi["bbox"]]
+    for roi in reference_rois:
+        if isinstance(roi.get("bbox"), list):
+            return [int(v) for v in roi["bbox"]]
+    return None
 
 
 def _save_flat_corrected_outputs(
@@ -1044,51 +1138,11 @@ def _rgb_for_selected_flat_result(frame, flat_model, frame_result: dict[str, Any
     return demosaic_to_rgb(corrected, frame.cfa_pattern)
 
 
-def _resize_rgb_for_processing(
-    rgb_linear: np.ndarray,
-    max_side: int,
-) -> tuple[np.ndarray, dict[str, Any]]:
-    """Limit RGB-domain stage resolution for stitched full-area scans."""
-
-    height, width = rgb_linear.shape[:2]
-    meta = {
-        "resized": False,
-        "source_width": int(width),
-        "source_height": int(height),
-        "output_width": int(width),
-        "output_height": int(height),
-        "max_side": int(max_side),
-        "interpolation": None,
-    }
-    if max_side <= 0 or max(width, height) <= int(max_side):
-        return rgb_linear, meta
-
-    scale = float(max_side) / float(max(width, height))
-    out_w = max(2, int(round(width * scale)))
-    out_h = max(2, int(round(height * scale)))
-    resized = cv2.resize(
-        rgb_linear.astype(np.float32, copy=False),
-        (out_w, out_h),
-        interpolation=cv2.INTER_AREA,
-    ).astype(np.float32, copy=False)
-    meta.update(
-        {
-            "resized": True,
-            "output_width": int(out_w),
-            "output_height": int(out_h),
-            "scale": float(scale),
-            "interpolation": "cv2.INTER_AREA",
-        }
-    )
-    return resized, meta
-
-
 def _save_negative_stage_outputs(
     frame,
     flat_model,
     frame_result: dict[str, Any],
     base_reference,
-    rgb_linear: np.ndarray,
     output_dir: Path,
     preview_gamma: float,
     density_percentile: float,
@@ -1141,14 +1195,16 @@ def _save_negative_stage_outputs(
     save_stage3_debug_png: bool,
     stage4_params: dict[str, Any],
     save_stage4_debug_png: bool,
-    save_intermediate_previews: bool,
     save_npy: bool,
     save_linear16: bool,
+    save_intermediate_previews: bool,
 ) -> None:
-    """Save [5]-[10], Stage 2, Stage 3, and Stage 4 images for visual inspection."""
+    """Run negative stages and save final output plus optional visual inspection files."""
 
     stem = Path(frame.path).stem
-    # rgb_linear is passed in — already computed by _process_frame_with_evaluator.
+    strength = float(frame_result["flat_field_strength"])
+    corrected = apply_flat_field(frame, flat_model, strength=strength)
+    rgb_linear = demosaic_to_rgb(corrected, frame.cfa_pattern)
     negative = process_negative_stages(
         rgb_linear,
         base_reference,
@@ -1331,7 +1387,7 @@ def _save_negative_stage_outputs(
         save_linear_rgb16_png(stage2.stage2_linear_output, paths["stage2_perceptual_tone_base_linear16"])
     if save_npy:
         np.save(paths["stage2_perceptual_tone_base_npy"], stage2.stage2_linear_output.astype(np.float32))
-    if save_stage2_debug_png:
+    if save_intermediate_previews and save_stage2_debug_png:
         _save_luma_debug_preview(stage2.debug.get("L_before"), paths["stage2_L_before_preview"])
         _save_luma_debug_preview(stage2.debug.get("L_after_zoned"), paths["stage2_L_after_zoned_preview"])
         _save_luma_debug_preview(stage2.debug.get("L_after_rolloff"), paths["stage2_L_after_rolloff_preview"])
@@ -1342,7 +1398,7 @@ def _save_negative_stage_outputs(
         save_linear_rgb16_png(stage3.stage3_linear_output, paths["stage3_pseudo_lut_color_refinement_linear16"])
     if save_npy:
         np.save(paths["stage3_pseudo_lut_color_refinement_npy"], stage3.stage3_linear_output.astype(np.float32))
-    if save_stage3_debug_png:
+    if save_intermediate_previews and save_stage3_debug_png:
         _save_scalar_debug_preview(stage3.debug.get("sat_scale"), paths["stage3_sat_scale_preview"])
         _save_hue_debug_preview(stage3.debug.get("hue_map"), paths["stage3_hue_map_preview"])
         _save_mask_debug_preview(stage3.debug.get("red_mask"), paths["stage3_red_mask_preview"])
@@ -1398,10 +1454,20 @@ def _save_negative_stage_outputs(
             "stage4_after_film_finish_preview",
         ):
             stage4_debug_keys.add(key)
+    intermediate_keys = {
+        "05_demosaic_rgb_preview",
+        "06_base_corrected_preview",
+        "07_density_preview",
+        "08_color_unmixed_density_preview",
+        "09_inverted_preview",
+        "10_stage10_soft_reference_mapping_preview",
+        "stage2_perceptual_tone_base_preview",
+        "stage3_pseudo_lut_color_refinement_preview",
+    }
     saved_paths = {
         k: str(v)
         for k, v in paths.items()
-        if (save_intermediate_previews or k == "stage4_final_preview")
+        if (save_intermediate_previews or k not in intermediate_keys)
         and (save_npy or not k.endswith("_npy"))
         and (save_linear16 or not k.endswith("_linear16"))
         and (not k.startswith("stage2_L_") or k in stage2_debug_keys)
@@ -1472,219 +1538,6 @@ def _save_display_debug_preview(img: np.ndarray | None, path: Path) -> None:
     save_display_rgb_png(np.asarray(img, dtype=np.float32), path)
 
 
-def _run_stage23_contract_verification() -> dict[str, Any]:
-    """Synthetic smoke checks for Stage 2/3 Lab path contracts.
-
-    This validates the current OpenCV Lab path's single encode/decode contract.
-    It is not a golden-image regression proof against the previous explicit
-    RGB<->Lab implementation.
-
-    Checks:
-    1) Neutral inputs remain near neutral in Lab and after round-trip.
-    2) Round-trip in encoded Lab path is numerically stable.
-    3) Stage previews remain separate from linear outputs.
-    """
-
-    gamma = 2.2
-    eps = 1e-6
-    percentile = 99.5
-
-    neutral_lin = np.linspace(0.02, 0.95, 64, dtype=np.float32).reshape(8, 8, 1)
-    neutral_lin = np.repeat(neutral_lin, 3, axis=2)
-
-    y = np.linspace(0.0, 1.0, 32, dtype=np.float32)
-    x = np.linspace(0.0, 1.0, 32, dtype=np.float32)
-    x_grid, y_grid = np.meshgrid(x, y)
-    hdr_linear = np.stack(
-        [
-            0.05 + 1.60 * x_grid,
-            0.03 + 1.20 * y_grid,
-            0.02 + 1.40 * (0.65 * x_grid + 0.35 * y_grid),
-        ],
-        axis=2,
-    ).astype(np.float32)
-
-    # Stage 2 conversion contract: _prepare_lab_input(srgb_encoded) returns
-    # encoded RGB that goes directly into RGB2Lab; Lab2RGB returns encoded RGB;
-    # decode to linear exactly once.
-    s2_prepared, s2_prepare_diag = stage2_perceptual_tone._prepare_lab_input(
-        neutral_lin,
-        mode="srgb_encoded",
-        percentile=percentile,
-        gamma=gamma,
-        eps=eps,
-    )
-    s2_lab = stage2_perceptual_tone._rgb_to_lab_for_mode(
-        s2_prepared,
-        mode="srgb_encoded",
-        gamma=gamma,
-    )
-    s2_encoded_rt = stage2_perceptual_tone._lab_to_rgb_for_mode(
-        s2_lab,
-        mode="srgb_encoded",
-        gamma=gamma,
-    )
-    s2_linear_rt = np.power(np.clip(s2_encoded_rt, 0.0, 1.0), gamma).astype(np.float32)
-    s2_expected_linear = np.power(np.clip(s2_prepared, 0.0, 1.0), gamma).astype(np.float32)
-    s2_expected_from_original = np.clip(
-        neutral_lin / (float(s2_prepare_diag["scale"]) + eps),
-        0.0,
-        1.0,
-    ).astype(np.float32)
-
-    s2_ab_abs_max = float(np.max(np.abs(s2_lab[..., 1:3])))
-    s2_roundtrip_max_err = float(np.max(np.abs(s2_linear_rt - s2_expected_linear)))
-    s2_roundtrip_mean_err = float(np.mean(np.abs(s2_linear_rt - s2_expected_linear)))
-    s2_original_linear_max_err = float(np.max(np.abs(s2_linear_rt - s2_expected_from_original)))
-    s2_original_linear_mean_err = float(np.mean(np.abs(s2_linear_rt - s2_expected_from_original)))
-
-    # Stage 3 conversion contract mirrors Stage 2 but always uses encoded Lab input.
-    s3_prepared, s3_prepare_diag = stage3_color_refinement._prepare_lab_input(
-        neutral_lin,
-        percentile=percentile,
-        gamma=gamma,
-        eps=eps,
-    )
-    s3_lab = stage3_color_refinement._srgb_like_to_lab(s3_prepared, gamma=gamma)
-    s3_encoded_rt = stage3_color_refinement._lab_to_srgb_like(s3_lab, gamma=gamma)
-    s3_linear_rt = np.power(np.clip(s3_encoded_rt, 0.0, 1.0), gamma).astype(np.float32)
-    s3_expected_linear = np.power(np.clip(s3_prepared, 0.0, 1.0), gamma).astype(np.float32)
-    s3_expected_from_original = np.clip(
-        neutral_lin / (float(s3_prepare_diag["scale"]) + eps),
-        0.0,
-        1.0,
-    ).astype(np.float32)
-
-    s3_ab_abs_max = float(np.max(np.abs(s3_lab[..., 1:3])))
-    s3_roundtrip_max_err = float(np.max(np.abs(s3_linear_rt - s3_expected_linear)))
-    s3_roundtrip_mean_err = float(np.mean(np.abs(s3_linear_rt - s3_expected_linear)))
-    s3_original_linear_max_err = float(np.max(np.abs(s3_linear_rt - s3_expected_from_original)))
-    s3_original_linear_mean_err = float(np.mean(np.abs(s3_linear_rt - s3_expected_from_original)))
-
-    # Full Stage 2/3 run with edits disabled validates preview-vs-linear separation.
-    s2_result = apply_stage2_perceptual_tone_base(
-        hdr_linear,
-        gray_norm_enabled=False,
-        perceptual_space_enabled=True,
-        lab_input_mode="srgb_encoded",
-        lab_input_percentile=percentile,
-        lab_input_gamma=gamma,
-        lab_input_eps=eps,
-        zoned_tone_enabled=False,
-        highlight_rolloff_enabled=False,
-        preview_enabled=True,
-        preview_percentile=99.5,
-        preview_gamma=2.2,
-        preview_eps=1e-6,
-    )
-    s3_result = apply_stage3_pseudo_lut_color_refinement(
-        s2_result.stage2_linear_output,
-        include_debug=False,
-        lab_input_percentile=percentile,
-        lab_input_gamma=gamma,
-        lab_input_eps=eps,
-        luma_chroma_enabled=False,
-        hue_adjust_enabled=False,
-        neutral_protect_enabled=False,
-        preview_enabled=True,
-        preview_percentile=99.5,
-        preview_gamma=2.2,
-        preview_eps=1e-6,
-    )
-
-    s2_preview_sep = float(
-        np.mean(
-            np.abs(
-                s2_result.stage2_preview_output
-                - np.clip(s2_result.stage2_linear_output, 0.0, 1.0)
-            )
-        )
-    )
-    s3_preview_sep = float(
-        np.mean(
-            np.abs(
-                s3_result.stage3_preview_output
-                - np.clip(s3_result.stage3_linear_output, 0.0, 1.0)
-            )
-        )
-    )
-
-    checks = {
-        "stage2_neutral_lab": {
-            "passed": s2_ab_abs_max <= 1.5,
-            "metric": s2_ab_abs_max,
-            "threshold": 1.5,
-            "description": "Neutral gray stays near Lab neutral for Stage 2 path.",
-        },
-        "stage2_roundtrip_stability": {
-            "passed": s2_roundtrip_max_err <= 5e-3,
-            "max_abs_error": s2_roundtrip_max_err,
-            "mean_abs_error": s2_roundtrip_mean_err,
-            "threshold": 5e-3,
-            "description": "Stage 2 encoded Lab round-trip remains stable.",
-        },
-        "stage2_original_linear_contract": {
-            "passed": s2_original_linear_max_err <= 5e-3,
-            "max_abs_error": s2_original_linear_max_err,
-            "mean_abs_error": s2_original_linear_mean_err,
-            "threshold": 5e-3,
-            "description": (
-                "Stage 2 round-trip returns to the normalized original linear input "
-                "after exactly one decode."
-            ),
-        },
-        "stage3_neutral_lab": {
-            "passed": s3_ab_abs_max <= 1.5,
-            "metric": s3_ab_abs_max,
-            "threshold": 1.5,
-            "description": "Neutral gray stays near Lab neutral for Stage 3 path.",
-        },
-        "stage3_roundtrip_stability": {
-            "passed": s3_roundtrip_max_err <= 5e-3,
-            "max_abs_error": s3_roundtrip_max_err,
-            "mean_abs_error": s3_roundtrip_mean_err,
-            "threshold": 5e-3,
-            "description": "Stage 3 encoded Lab round-trip remains stable.",
-        },
-        "stage3_original_linear_contract": {
-            "passed": s3_original_linear_max_err <= 5e-3,
-            "max_abs_error": s3_original_linear_max_err,
-            "mean_abs_error": s3_original_linear_mean_err,
-            "threshold": 5e-3,
-            "description": (
-                "Stage 3 round-trip returns to the normalized original linear input "
-                "after exactly one decode."
-            ),
-        },
-        "preview_is_separate_from_linear": {
-            "passed": (s2_preview_sep > 1e-4) and (s3_preview_sep > 1e-4),
-            "stage2_mean_abs_diff": s2_preview_sep,
-            "stage3_mean_abs_diff": s3_preview_sep,
-            "threshold": 1e-4,
-            "description": "Stage 2/3 preview buffers are not the linear pipeline outputs.",
-        },
-    }
-    all_passed = all(bool(item["passed"]) for item in checks.values())
-    return {
-        "stage": "stage2_stage3_contract_smoke_test",
-        "all_passed": all_passed,
-        "checks": checks,
-        "limitations": (
-            "This validates the current encoded OpenCV Lab contract only. "
-            "It does not prove golden-image equivalence to the previous explicit "
-            "RGB<->Lab implementation."
-        ),
-        "contract": {
-            "stage2_prepare": "srgb_encoded returns encoded RGB for Lab conversion",
-            "stage2_lab2rgb": "srgb_encoded output treated as encoded RGB",
-            "stage2_decode": "exactly one encoded->linear decode after Lab2RGB",
-            "stage3_prepare": "returns encoded RGB for Lab conversion",
-            "stage3_lab2rgb": "output treated as encoded RGB",
-            "stage3_decode": "exactly one encoded->linear decode after Lab2RGB",
-        },
-    }
-
-
 def _resolve_backlight_path(input_dir: Path, requested: Path | None) -> Path:
     """Resolve the backlight/flat-field RAW file without baking in one filename."""
 
@@ -1723,6 +1576,18 @@ def _resolve_base_frame_path(input_dir: Path, requested: Path | None) -> Path:
             f"No base frame found at {path}. Pass one explicitly with --base-frame."
         )
     return path.resolve()
+
+
+def _parse_bbox_arg(value: str | None) -> list[int] | None:
+    if value is None or not str(value).strip():
+        return None
+    parts = [part.strip() for part in str(value).replace(";", ",").split(",")]
+    if len(parts) != 4:
+        raise ValueError("--film-content-bbox must be x0,y0,x1,y1")
+    bbox = [int(round(float(part))) for part in parts]
+    if bbox[0] >= bbox[2] or bbox[1] >= bbox[3]:
+        raise ValueError("--film-content-bbox must have positive area")
+    return bbox
 
 
 def _looks_like_backlight_frame(path: Path) -> bool:
@@ -1809,16 +1674,16 @@ def _resolve_frame_paths(
     base_frame_path: Path,
 ) -> list[Path]:
     if requested:
-        return [
-            path.resolve()
-            for path in requested
-            if path.resolve() != base_frame_path.resolve()
-        ]
+        # Trust explicit --frame args; do not filter out the base frame here.
+        # When a tile serves as its own base reference, it must still be processed.
+        return [path.resolve() for path in requested]
 
+    # Auto-discovery: scan input_dir, exclude the base frame to avoid
+    # treating it as a film frame.
     paths = [path.resolve() for path in sorted(input_dir.glob("capture_*.dng"))]
     if not paths:
         raise FileNotFoundError(f"No default DNG frames found in {input_dir}")
-    return paths
+    return [p for p in paths if p != base_frame_path.resolve()]
 
 
 if __name__ == "__main__":

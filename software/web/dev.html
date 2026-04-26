@@ -272,7 +272,7 @@
             <div class="card-header">
                 <div>
                     <h2>Calibration</h2>
-                    <p class="meta-line" style="margin-top:3px">Both DNGs needed for the negative RAW branch.</p>
+                    <p class="meta-line" style="margin-top:3px">Backlight DNG is required; base frame is optional fallback.</p>
                 </div>
                 <button id="refreshCalibBtn" class="ghost small-btn">Refresh</button>
             </div>
@@ -282,7 +282,7 @@
                         <div class="calib-card-title">Backlight Frame</div>
                         <div><span id="backlightChip" class="status-chip">Checking...</span></div>
                         <div class="controls-row">
-                            <button id="backlightCapturePiBtn" class="accent small-btn">Full-Area Scan from Pi</button>
+                            <button id="backlightCapturePiBtn" class="accent small-btn">Capture Tile Set from Pi</button>
                             <label for="backlightUpload" style="cursor:pointer">
                                 <span class="ghost" style="display:inline-block;padding:7px 12px;border:1px solid #c9d4de;border-radius:6px;font-size:0.85rem;font-weight:600;background:#f7fafc">Upload DNG</span>
                             </label>
@@ -317,7 +317,7 @@
             <div class="card-header">
                 <div>
                     <h2>Base ROI Crop</h2>
-                    <p class="meta-line" style="margin-top:3px">Drag a rectangle over the clear-base film area. Saved as <code>reference_layout.json</code> alongside the base frame DNG.</p>
+                    <p class="meta-line" style="margin-top:3px">Optional manual fallback: drag a rectangle over the clear-base film area.</p>
                 </div>
                 <div class="controls-row">
                     <button id="loadPreviewBtn" class="ghost">Load Preview</button>
@@ -326,7 +326,7 @@
             </div>
             <div class="card-body">
                 <div id="cropPlaceholder" class="crop-placeholder">
-                    Upload a base frame DNG first, then click <strong>Load Preview</strong>.
+                    Upload a base frame DNG first to use the manual fallback crop tool.
                 </div>
                 <div id="cropWrap" style="display:none">
                     <div class="crop-outer">
@@ -375,6 +375,6 @@
         </section>
 
     </main>
-    <script src="dev.js"></script>
+    <script src="dev.js?v=2"></script>
 </body>
 </html>

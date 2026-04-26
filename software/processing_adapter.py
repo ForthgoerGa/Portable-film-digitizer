@@ -4,8 +4,8 @@ Phase 3 introduces an upfront classifier step. Based on the classification and
 the state of the calibration store we dispatch to one of:
 
 - ``negative_raw``    — ``Post_Processing_Negative/run_physical_correction.py``
-                         subprocess on ``stitched_raw.dng`` when both the
-                         backlight and base-frame calibration DNGs are present.
+                         subprocess on ``stitched_raw.dng`` when the
+                         backlight/base-frame DNGs and reference layout are present.
 - ``negative_preview``— in-process ``pipelines/negative.py`` on the browser
                          preview when calibration is missing. Provides a useful
                          result even without RAW calibration.
@@ -157,6 +157,275 @@ def _looks_like_instax(image_bgr: np.ndarray) -> bool:
     return bright_border and desaturated_border and brighter_than_inner
 
 
+def _bbox_from_mask(mask: np.ndarray) -> list[int] | None:
+    if mask is None or mask.size == 0:
+        return None
+    rows = np.any(mask, axis=1)
+    cols = np.any(mask, axis=0)
+    if not rows.any() or not cols.any():
+        return None
+    y0 = int(np.argmax(rows))
+    y1 = int(len(rows) - np.argmax(rows[::-1]))
+    x0 = int(np.argmax(cols))
+    x1 = int(len(cols) - np.argmax(cols[::-1]))
+    return [x0, y0, x1, y1]
+
+
+def _expand_bbox(
+    bbox: list[int],
+    width: int,
+    height: int,
+    margin_frac: float = 0.03,
+) -> list[int]:
+    x0, y0, x1, y1 = [int(v) for v in bbox]
+    margin = int(round(max(x1 - x0, y1 - y0) * margin_frac))
+    return [
+        max(0, x0 - margin),
+        max(0, y0 - margin),
+        min(width, x1 + margin),
+        min(height, y1 + margin),
+    ]
+
+
+def _detect_middle_film_bbox(preview_source: Path) -> dict[str, Any] | None:
+    work = cv2.imread(str(preview_source), cv2.IMREAD_REDUCED_COLOR_8)
+    if work is None:
+        work = cv2.imread(str(preview_source), cv2.IMREAD_REDUCED_COLOR_4)
+    if work is None:
+        logger.warning("Could not load preview thumbnail for bbox detection: %s", preview_source)
+        return None
+    try:
+        from PIL import Image  # type: ignore
+
+        with Image.open(preview_source) as image:
+            width, height = image.size
+    except Exception:
+        height, width = work.shape[0] * 8, work.shape[1] * 8
+
+    if min(height, width) < 100:
+        return None
+    wh, ww = work.shape[:2]
+    scale_x = ww / float(width)
+    scale_y = wh / float(height)
+    hsv = cv2.cvtColor(work, cv2.COLOR_BGR2HSV)
+    sat = hsv[..., 1]
+    val = hsv[..., 2]
+    gray = cv2.cvtColor(work, cv2.COLOR_BGR2GRAY)
+    local_mean = cv2.blur(gray, (31, 31))
+    texture = cv2.absdiff(gray, local_mean)
+
+    mask = (((sat > 38) & (val > 20) & (val < 245)) | (texture > 18)).astype(np.uint8)
+    mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, np.ones((5, 5), np.uint8), iterations=1)
+    mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, np.ones((13, 13), np.uint8), iterations=1)
+
+    candidates: list[dict[str, Any]] = []
+    image_area = float(ww * wh)
+    center = np.array([ww / 2.0, wh / 2.0], dtype=np.float32)
+    num_labels, _labels, stats, _centroids = cv2.connectedComponentsWithStats(mask, connectivity=8)
+    for label in range(1, num_labels):
+        x, y, w, h, area = [int(v) for v in stats[label]]
+        area_frac = (w * h) / image_area
+        if area_frac < 0.025 or area_frac > 0.65:
+            continue
+        aspect = w / max(h, 1)
+        if aspect < 0.35 or aspect > 4.0:
+            continue
+        candidate_center = np.array([x + w / 2.0, y + h / 2.0], dtype=np.float32)
+        center_dist = float(np.linalg.norm((candidate_center - center) / np.array([ww, wh])))
+        fill = float(area / max(w * h, 1))
+        score = (1.0 - min(center_dist * 2.0, 1.0)) * 0.55 + min(area_frac / 0.18, 1.0) * 0.30 + fill * 0.15
+        candidates.append(
+            {
+                "bbox_work": [int(x), int(y), int(x + w), int(y + h)],
+                "score": float(score),
+                "area_frac": float(area_frac),
+                "center_distance": center_dist,
+                "fill": fill,
+            }
+        )
+    if not candidates:
+        fallback = [
+            int(round(width * 0.18)),
+            int(round(height * 0.12)),
+            int(round(width * 0.63)),
+            int(round(height * 0.62)),
+        ]
+        return {
+            "bbox": _expand_bbox(fallback, width, height, margin_frac=0.015),
+            "score": 0.35,
+            "mode": "middle_fixed_geometry_fallback",
+            "candidate_count": 0,
+            "coordinate_space": "preview_source_pixels",
+        }
+
+    chosen = max(candidates, key=lambda item: item["score"])
+    x0, y0, x1, y1 = chosen["bbox_work"]
+    bbox = [
+        int(round(x0 / scale_x)),
+        int(round(y0 / scale_y)),
+        int(round(x1 / scale_x)),
+        int(round(y1 / scale_y)),
+    ]
+    bbox = _expand_bbox(bbox, width, height)
+    return {
+        "bbox": bbox,
+        "score": chosen["score"],
+        "mode": "middle_preview_contour",
+        "candidate_count": len(candidates),
+        "coordinate_space": "preview_source_pixels",
+    }
+
+
+def _load_bbox_sidecar(preview_source: Path, output_dir: Path) -> dict[str, Any] | None:
+    candidates = [
+        output_dir / "bbox_detection.json",
+        preview_source.parent / "bbox_detection.json",
+        preview_source.parent / "detected_bboxes.json",
+        preview_source.parent / "film_bbox.json",
+        preview_source.with_name(f"{preview_source.stem}_bbox_detection.json"),
+    ]
+    for candidate in candidates:
+        if not candidate.exists():
+            continue
+        try:
+            payload = json.loads(candidate.read_text(encoding="utf-8"))
+        except Exception as exc:
+            logger.warning("Could not read bbox sidecar %s: %s", candidate, exc)
+            continue
+        if isinstance(payload, dict):
+            payload.setdefault("source", str(candidate))
+            payload.setdefault("mode", "sidecar")
+            return payload
+    return None
+
+
+def _detect_preview_bboxes(preview_source: Path, output_dir: Path) -> dict[str, Any] | None:
+    """Attach bbox metadata without changing the physical RAW pipeline math."""
+    sidecar = _load_bbox_sidecar(preview_source, output_dir)
+    if sidecar is not None:
+        return sidecar
+
+    middle_film = _detect_middle_film_bbox(preview_source)
+    try:
+        _ensure_agentic_on_path()
+        from raw_pipeline.border_detection import detect_border_regions  # type: ignore
+    except Exception as exc:
+        logger.debug("BBox detection unavailable: %s", exc)
+        if middle_film is None:
+            return {"mode": "unavailable", "error": str(exc)}
+        payload = {
+            "mode": "middle_preview_contour",
+            "coordinate_space": "preview_source_pixels",
+            "preview_source": str(preview_source),
+            "film_content_bbox": middle_film["bbox"],
+            "base_candidate_bbox": None,
+            "confidence": middle_film["score"],
+            "middle_film_detection": middle_film,
+            "base_detection_error": str(exc),
+        }
+        (output_dir / "bbox_detection.json").write_text(
+            json.dumps(payload, indent=2),
+            encoding="utf-8",
+        )
+        return payload
+
+    image_bgr = cv2.imread(str(preview_source), cv2.IMREAD_COLOR)
+    if image_bgr is None:
+        return {"mode": "error", "error": f"Could not read preview: {preview_source}"}
+
+    try:
+        image_rgb = cv2.cvtColor(image_bgr, cv2.COLOR_BGR2RGB).astype(np.float32) / 255.0
+        detected = detect_border_regions(image_rgb)
+        payload = {
+            "mode": "cv_preview_border_detection",
+            "coordinate_space": "preview_source_pixels",
+            "preview_source": str(preview_source),
+            "film_content_bbox": (
+                middle_film["bbox"]
+                if middle_film is not None
+                else list(detected.frame_bbox) if detected.frame_bbox else None
+            ),
+            "base_candidate_bbox": _bbox_from_mask(detected.clearbase_candidate_mask),
+            "confidence": float(detected.confidence),
+            "method_votes": detected.method_votes,
+            "middle_film_detection": middle_film,
+        }
+        (output_dir / "bbox_detection.json").write_text(
+            json.dumps(payload, indent=2),
+            encoding="utf-8",
+        )
+        return payload
+    except Exception as exc:
+        logger.warning("Preview bbox detection failed: %s", exc)
+        return {"mode": "error", "error": str(exc)}
+
+
+def _map_preview_bbox_to_raw(
+    bbox: list[int] | None,
+    *,
+    preview_source: Path,
+    raw_source: Path,
+) -> list[int] | None:
+    if not bbox:
+        return None
+    try:
+        from PIL import Image  # type: ignore
+
+        with Image.open(preview_source) as image:
+            preview_w, preview_h = image.size
+    except Exception as exc:
+        logger.warning("Could not inspect preview dimensions for bbox mapping: %s", exc)
+        return None
+    raw_w, raw_h = _read_raw_dimensions(raw_source)
+    if raw_w is None or raw_h is None:
+        logger.warning("Could not inspect RAW dimensions for bbox mapping: %s", raw_source)
+        return None
+
+    sx = raw_w / max(preview_w, 1)
+    sy = raw_h / max(preview_h, 1)
+    x0, y0, x1, y1 = bbox
+    mapped = [
+        int(round(x0 * sx)),
+        int(round(y0 * sy)),
+        int(round(x1 * sx)),
+        int(round(y1 * sy)),
+    ]
+    mapped[0] = max(0, min(mapped[0], raw_w - 2))
+    mapped[1] = max(0, min(mapped[1], raw_h - 2))
+    mapped[2] = max(mapped[0] + 2, min(mapped[2], raw_w))
+    mapped[3] = max(mapped[1] + 2, min(mapped[3], raw_h))
+    mapped[0] -= mapped[0] % 2
+    mapped[1] -= mapped[1] % 2
+    mapped[2] -= mapped[2] % 2
+    mapped[3] -= mapped[3] % 2
+    return mapped
+
+
+def _read_raw_dimensions(raw_source: Path) -> tuple[int | None, int | None]:
+    try:
+        import rawpy  # type: ignore
+
+        with rawpy.imread(str(raw_source)) as raw:
+            raw_h, raw_w = raw.raw_image_visible.shape
+            return int(raw_w), int(raw_h)
+    except Exception:
+        pass
+    try:
+        import tifffile  # type: ignore
+
+        with tifffile.TiffFile(str(raw_source)) as tif:
+            page = tif.pages[0]
+            return int(page.imagewidth), int(page.imagelength)
+    except Exception:
+        return None, None
+
+
+def _dng_dimensions(path: Path | None) -> tuple[int | None, int | None]:
+    if path is None:
+        return None, None
+    return _read_raw_dimensions(path)
+
+
 class _ClassifierResult:
     __slots__ = ("classification", "raw_label", "mode", "error")
 
@@ -182,41 +451,55 @@ class ProcessingAdapter:
         preview_source: Path,
         output_dir: Path,
         progress_cb: Callable[[dict], None] | None = None,
+        classifier_result: _ClassifierResult | None = None,
+        bbox_metadata: dict[str, Any] | None = None,
+        reference_layout_path: Path | None = None,
     ) -> dict:
         output_dir.mkdir(parents=True, exist_ok=True)
 
         if not preview_source.exists():
             raise RuntimeError(f"Preview source not found: {preview_source}")
 
-        classifier_result = self._classify(preview_source)
+        if bbox_metadata is None:
+            bbox_metadata = _detect_preview_bboxes(preview_source, output_dir)
+        if classifier_result is None:
+            classifier_result = self._classify(preview_source)
         if progress_cb:
             progress_cb(
                 {
                     "classification": classifier_result.classification,
                     "classifier_raw_label": classifier_result.raw_label,
                     "classifier_mode": classifier_result.mode,
+                    "bbox_detection": bbox_metadata,
                     "stage_hint": "classify_done",
                 }
             )
 
         negative_raw_compatibility = (
-            self._negative_raw_compatibility(canonical_source)
+            self._negative_raw_compatibility(canonical_source, reference_layout_path)
             if classifier_result.classification == "negative_film"
             else None
         )
         branch = self._select_branch(classifier_result, negative_raw_compatibility)
 
         if branch == "negative_raw":
-            backlight_dng = calibration_store.get_dng_path_if_ready(calibration_store.BACKLIGHT)
+            backlight_dng = self._select_backlight_for_raw_run(canonical_source)
             base_frame_dng = calibration_store.get_dng_path_if_ready(calibration_store.BASE_FRAME)
-            assert canonical_source is not None and backlight_dng is not None and base_frame_dng is not None
+            assert canonical_source is not None and backlight_dng is not None
+            base_frame_for_run, base_frame_usage = self._select_base_frame_for_raw_run(
+                frame_dng=canonical_source,
+                base_frame_dng=base_frame_dng,
+            )
             return self._run_negative_raw_branch(
                 frame_dng=canonical_source,
                 backlight_dng=backlight_dng,
-                base_frame_dng=base_frame_dng,
+                base_frame_dng=base_frame_for_run,
+                base_frame_usage=base_frame_usage,
                 preview_source=preview_source,
                 output_dir=output_dir,
                 classifier_result=classifier_result,
+                bbox_metadata=bbox_metadata,
+                reference_layout_path=reference_layout_path,
                 progress_cb=progress_cb,
             )
 
@@ -236,6 +519,7 @@ class ProcessingAdapter:
                 missing_calibrations=(
                     negative_raw_compatibility or {}
                 ).get("missing_calibrations"),
+                bbox_metadata=bbox_metadata,
                 progress_cb=progress_cb,
             )
 
@@ -249,6 +533,7 @@ class ProcessingAdapter:
                 output_dir=output_dir,
                 canonical_source=canonical_source,
                 classifier_result=classifier_result,
+                bbox_metadata=bbox_metadata,
                 progress_cb=progress_cb,
             )
 
@@ -262,6 +547,7 @@ class ProcessingAdapter:
                 output_dir=output_dir,
                 canonical_source=canonical_source,
                 classifier_result=classifier_result,
+                bbox_metadata=bbox_metadata,
                 progress_cb=progress_cb,
             )
 
@@ -270,6 +556,7 @@ class ProcessingAdapter:
             preview_source=preview_source,
             output_dir=output_dir,
             classifier_result=classifier_result,
+            bbox_metadata=bbox_metadata,
             progress_cb=progress_cb,
         )
 
@@ -320,7 +607,11 @@ class ProcessingAdapter:
             return "instax"
         return "fallback"
 
-    def _negative_raw_compatibility(self, canonical_source: Path | None) -> dict:
+    def _negative_raw_compatibility(
+        self,
+        canonical_source: Path | None,
+        reference_layout_path: Path | None = None,
+    ) -> dict:
         if canonical_source is None or not canonical_source.exists():
             return {
                 "ok": False,
@@ -334,34 +625,33 @@ class ProcessingAdapter:
                 "missing_calibrations": [],
             }
 
-        backlight = calibration_store.get_dng_path_if_ready(calibration_store.BACKLIGHT)
+        backlight = self._select_backlight_for_raw_run(canonical_source)
         base_frame = calibration_store.get_dng_path_if_ready(calibration_store.BASE_FRAME)
+        roi_path = reference_layout_path or (calibration_store.dng_path(calibration_store.BASE_FRAME).parent / "reference_layout.json")
         missing = []
         if backlight is None:
             missing.append("backlight")
-        if base_frame is None:
-            missing.append("base_frame")
+        if not roi_path.exists():
+            missing.append("reference_layout")
         if missing:
             return {
                 "ok": False,
-                "reason": "missing_calibration_dng",
+                "reason": "missing_calibration_asset",
                 "missing_calibrations": missing,
-            }
-
-        roi_path = calibration_store.dng_path(calibration_store.BASE_FRAME).parent / "reference_layout.json"
-        if not roi_path.exists():
-            return {
-                "ok": False,
-                "reason": "base_frame_roi_missing",
-                "missing_calibrations": [],
             }
 
         frame_sig = calibration_store.dng_signature(canonical_source)
         backlight_sig = calibration_store.dng_signature(backlight)
-        base_frame_sig = calibration_store.dng_signature(base_frame)
+        base_frame_sig = calibration_store.dng_signature(base_frame or canonical_source)
         ok, reason = calibration_store.signatures_compatible(
             frame_sig,
             backlight_sig,
+        )
+        base_dims_match = (
+            frame_sig.get("width") == base_frame_sig.get("width")
+            and frame_sig.get("height") == base_frame_sig.get("height")
+            and frame_sig.get("raw_pattern") == base_frame_sig.get("raw_pattern")
+            and frame_sig.get("color_desc") == base_frame_sig.get("color_desc")
         )
         return {
             "ok": ok,
@@ -370,9 +660,39 @@ class ProcessingAdapter:
             "frame_signature": frame_sig,
             "backlight_signature": backlight_sig,
             "base_frame_signature": base_frame_sig,
-            "base_frame_usage": "roi_reference_only",
+            "base_frame_usage": (
+                "calibration_base_frame"
+                if base_dims_match
+                else "current_scan_base_reference_due_base_size_mismatch"
+            ),
             "base_frame_roi_path": str(roi_path),
+            "base_detection": "reference_layout",
         }
+
+    def _select_backlight_for_raw_run(self, frame_dng: Path | None) -> Path | None:
+        """Prefer same-position backlight tile, then legacy single DNG.
+
+        The current scanner strategy processes individual DNG tiles and only
+        integrates after processing. In that mode the correct flat-field frame is
+        the backlight tile with the same row/col stem.
+        """
+        if frame_dng is not None:
+            tile_backlight = calibration_store.matching_tile_dng(calibration_store.BACKLIGHT, frame_dng)
+            if tile_backlight is not None:
+                return tile_backlight
+        return calibration_store.get_dng_path_if_ready(calibration_store.BACKLIGHT)
+
+    def _select_base_frame_for_raw_run(
+        self,
+        *,
+        frame_dng: Path,
+        base_frame_dng: Path | None,
+    ) -> tuple[Path, str]:
+        frame_dims = _dng_dimensions(frame_dng)
+        base_dims = _dng_dimensions(base_frame_dng)
+        if base_frame_dng is not None and frame_dims == base_dims:
+            return base_frame_dng, "calibration_base_frame"
+        return frame_dng, "current_scan_base_reference_due_base_size_mismatch"
 
     # Negative RAW branch (subprocess) --------------------------------------
 
@@ -381,13 +701,24 @@ class ProcessingAdapter:
         frame_dng: Path,
         backlight_dng: Path,
         base_frame_dng: Path,
+        base_frame_usage: str,
         preview_source: Path,
         output_dir: Path,
         classifier_result: _ClassifierResult,
+        bbox_metadata: dict[str, Any] | None,
+        reference_layout_path: Path | None = None,
         progress_cb: Callable[[dict], None] | None = None,
     ) -> dict:
         if not _NEGATIVE_ENTRY.exists():
             raise RuntimeError(f"Negative branch entry not found: {_NEGATIVE_ENTRY}")
+
+        film_content_bbox = None
+        if bbox_metadata:
+            film_content_bbox = _map_preview_bbox_to_raw(
+                bbox_metadata.get("film_content_bbox"),
+                preview_source=preview_source,
+                raw_source=frame_dng,
+            )
 
         if progress_cb:
             progress_cb(
@@ -408,12 +739,14 @@ class ProcessingAdapter:
             str(frame_dng),
             "--backlight-frame",
             str(backlight_dng),
-            "--base-frame",
-            str(base_frame_dng),
             "--input-dir",
             str(frame_dng.parent),
             "--output-dir",
             str(output_dir),
+            "--base-frame",
+            str(base_frame_dng),
+            "--reference-layout",
+            str(reference_layout_path or (calibration_store.dng_path(calibration_store.BASE_FRAME).parent / "reference_layout.json")),
             "--skip-npy",
             "--skip-linear16",
             "--skip-stage2-debug-png",
@@ -421,12 +754,9 @@ class ProcessingAdapter:
             "--skip-stage4-debug-png",
             "--skip-intermediate-previews",
             "--skip-flat-corrected-preview",
-            "--max-processing-side",
-            "3200",
         ]
-        _roi_path = base_frame_dng.parent / "reference_layout.json"
-        if _roi_path.exists():
-            cmd += ["--reference-layout", str(_roi_path)]
+        if film_content_bbox is not None:
+            cmd += ["--film-content-bbox", ",".join(str(v) for v in film_content_bbox)]
 
         proc = subprocess.Popen(
             cmd,
@@ -467,13 +797,18 @@ class ProcessingAdapter:
             "selected_branch": "negative",
             "runner_used": _NEGATIVE_RAW_RUNNER_NAME,
             "processing_mode": _NEGATIVE_RAW_MODE,
-            "processing_input_kind": "stitched_raw_dng",
+            "processing_input_kind": "single_tile_dng" if frame_dng.parent.name == "tiles" else "stitched_raw_dng",
             "processing_input_path": str(frame_dng),
             "canonical_source": str(frame_dng),
             "canonical_source_available": True,
             "preview_source": str(preview_source),
             "backlight_dng_path": str(backlight_dng),
             "base_frame_dng_path": str(base_frame_dng),
+            "base_reference_mode": base_frame_usage,
+            "reference_layout_path": str(reference_layout_path) if reference_layout_path else None,
+            "bbox_detection": bbox_metadata,
+            "film_content_bbox_raw": film_content_bbox,
+            "backlight_crop_mode": "same_film_content_bbox" if film_content_bbox else None,
             "final_output_path": str(final_path) if final_path else None,
             "negative_branch_report": report_path.name if report_path.exists() else None,
             "subprocess_stdout_tail": stdout_data.splitlines()[-10:] if stdout_data else [],
@@ -506,6 +841,7 @@ class ProcessingAdapter:
             "raw_preview_path": str(preview_source),
             "final_output_path": str(final_path) if final_path else None,
             "metadata_path": str(meta_file),
+            "film_content_bbox_raw": film_content_bbox,
         }
 
     def _locate_negative_raw_final(self, frame_dng: Path, output_dir: Path) -> Path | None:
@@ -529,6 +865,7 @@ class ProcessingAdapter:
         classifier_result: _ClassifierResult,
         calibration_skip_reason: str | None = None,
         missing_calibrations: list[str] | None = None,
+        bbox_metadata: dict[str, Any] | None = None,
         progress_cb: Callable[[dict], None] | None = None,
     ) -> dict:
         _ensure_agentic_on_path()
@@ -593,6 +930,7 @@ class ProcessingAdapter:
             "calibration_skip_reason": calibration_skip_reason,
             "missing_calibrations": missing_calibrations or [],
             "preview_source": str(preview_source),
+            "bbox_detection": bbox_metadata,
             "final_output_path": str(final_path),
             "output_image": final_path.name,
         }
@@ -635,6 +973,7 @@ class ProcessingAdapter:
         preview_source: Path,
         output_dir: Path,
         classifier_result: _ClassifierResult,
+        bbox_metadata: dict[str, Any] | None,
         progress_cb: Callable[[dict], None] | None,
     ) -> dict:
         if not _PREVIEW_RUNNER.exists():
@@ -729,6 +1068,7 @@ class ProcessingAdapter:
             "processing_input_kind": "preview_raster",
             "processing_input_path": str(preview_source),
             "canonical_source_available": bool(canonical_source and canonical_source.exists()),
+            "bbox_detection": bbox_metadata,
             "upstream_classifier_error": classifier_result.error,
         }
 

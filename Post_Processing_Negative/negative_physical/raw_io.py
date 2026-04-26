@@ -99,6 +99,72 @@ def load_raw_bayer(path: str | Path) -> RawBayerFrame:
     )
 
 
+def crop_raw_bayer_frame(
+    frame: RawBayerFrame,
+    bbox: list[int] | tuple[int, int, int, int],
+    *,
+    label: str = "crop",
+) -> RawBayerFrame:
+    """Return a CFA-safe crop of a RAW Bayer frame.
+
+    The bbox is clamped to the frame and aligned to even x/y boundaries so the
+    2x2 Bayer phase remains unchanged.
+    """
+
+    x0, y0, x1, y1 = _align_crop_bbox(bbox, frame.width, frame.height)
+    raw_bayer = frame.raw_bayer[y0:y1, x0:x1].copy()
+    normalized = frame.normalized_bayer[y0:y1, x0:x1].copy()
+    height, width = raw_bayer.shape
+    metadata = dict(frame.metadata)
+    metadata.update(
+        {
+            "path": f"{frame.path}#{label}",
+            "file_name": f"{frame.metadata.get('file_name', Path(frame.path).name)}#{label}",
+            "width": int(width),
+            "height": int(height),
+            "crop_bbox": [int(x0), int(y0), int(x1), int(y1)],
+            "crop_label": label,
+            "crop_source_path": frame.path,
+        }
+    )
+    return RawBayerFrame(
+        path=f"{frame.path}#{label}",
+        raw_bayer=raw_bayer,
+        normalized_bayer=normalized,
+        cfa_pattern=frame.cfa_pattern,
+        cfa_pattern_matrix=frame.cfa_pattern_matrix,
+        cfa_index_matrix=frame.cfa_index_matrix,
+        color_desc=frame.color_desc,
+        black_level=list(frame.black_level),
+        white_level=float(frame.white_level),
+        width=int(width),
+        height=int(height),
+        metadata=metadata,
+    )
+
+
+def _align_crop_bbox(
+    bbox: list[int] | tuple[int, int, int, int],
+    width: int,
+    height: int,
+) -> tuple[int, int, int, int]:
+    x0, y0, x1, y1 = [int(round(v)) for v in bbox]
+    x0 = max(0, min(x0, width - 2))
+    y0 = max(0, min(y0, height - 2))
+    x1 = max(x0 + 2, min(x1, width))
+    y1 = max(y0 + 2, min(y1, height))
+
+    x0 -= x0 % 2
+    y0 -= y0 % 2
+    x1 -= x1 % 2
+    y1 -= y1 % 2
+    if x1 <= x0:
+        x1 = min(width - (width % 2), x0 + 2)
+    if y1 <= y0:
+        y1 = min(height - (height % 2), y0 + 2)
+    return int(x0), int(y0), int(x1), int(y1)
+
+
 def normalize_bayer(
     raw_bayer: np.ndarray,
     raw_pattern: np.ndarray,
