@@ -2,6 +2,8 @@
 
 ECE 445 coursework design project repository for hardware/firmware/software development and lab notebook tracking.
 
+<img width="3440" height="1949" alt="image" src="https://github.com/user-attachments/assets/91c93f3c-77df-43fe-91bd-865cf310263f" />
+
 <img width="1623" height="1218" alt="2026_04_27_00_14_IMG_3069" src="https://github.com/user-attachments/assets/cb1d0f4a-072b-4e82-b9ca-eb3906e2cfc9" />
 
 
