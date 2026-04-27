@@ -16,6 +16,9 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, ConfigDict
 
 import calibration_store
+import flat_field_config
+import flat_field_maps
+import runtime_config
 from coordinator import coordinator
 from job_orchestrator import JobOrchestrator
 from serial_comm import (
@@ -178,13 +181,19 @@ def _send_pi_capture_to_pc(filename: str) -> dict:
 
 # Pi URLs and unified orchestrator ---------------------------------------------
 
-PI_CAMERA_URL = os.getenv("PI_CAMERA_URL", "http://10.12.194.1:8080").rstrip("/")
-PI_SCANNER_URL = os.getenv("PI_SCANNER_URL", "http://10.12.194.1:5000").rstrip("/")
+PI_CAMERA_URL = runtime_config.PI_CAMERA_URL
+PI_SCANNER_URL = runtime_config.PI_SCANNER_URL
 
-_orchestrator = JobOrchestrator(artifacts_dir=_jobs_dir, pi_scanner_url=PI_SCANNER_URL)
+_orchestrator = JobOrchestrator(
+    artifacts_dir=_jobs_dir,
+    pi_scanner_url=PI_SCANNER_URL,
+    pc_app_url=runtime_config.PC_APP_URL or None,
+)
 
 _backlight_scan_lock = threading.Lock()
 _backlight_scan_state: dict = {"running": False, "started_at": None, "error": None, "completed_at": None}
+_flat_map_lock = threading.Lock()
+_flat_map_state: dict = {"running": False, "started_at": None, "completed_at": None, "error": None, "reason": None}
 
 
 class ApiCreateOneClickJobRequest(BaseModel):
@@ -363,6 +372,31 @@ def _run_backlight_scan_thread(kind: calibration_store.CalibrationKind) -> None:
     except Exception as exc:
         with _backlight_scan_lock:
             _backlight_scan_state.update({"running": False, "error": str(exc), "completed_at": time.time()})
+
+
+def _run_flat_field_map_rebuild(reason: str) -> None:
+    try:
+        flat_field_maps.rebuild_all()
+        with _flat_map_lock:
+            _flat_map_state.update(
+                {"running": False, "completed_at": time.time(), "error": None, "reason": reason}
+            )
+    except Exception as exc:
+        with _flat_map_lock:
+            _flat_map_state.update(
+                {"running": False, "completed_at": time.time(), "error": str(exc), "reason": reason}
+            )
+
+
+def _start_flat_field_map_rebuild(reason: str) -> bool:
+    with _flat_map_lock:
+        if _flat_map_state["running"]:
+            return False
+        _flat_map_state.update(
+            {"running": True, "started_at": time.time(), "completed_at": None, "error": None, "reason": reason}
+        )
+    threading.Thread(target=_run_flat_field_map_rebuild, args=(reason,), daemon=True).start()
+    return True
 
 
 # Routes ------------------------------------------------------------------------
@@ -663,6 +697,8 @@ async def internal_receive_calibration_tile(
         if preview_tmp:
             preview_tmp.unlink(missing_ok=True)
         raise HTTPException(status_code=400, detail=str(exc)) from exc
+    if kind.name == calibration_store.BACKLIGHT.name and state.get("tile_set", {}).get("complete"):
+        _start_flat_field_map_rebuild("backlight_tile_set_complete")
     return {
         "saved": True,
         "row": row,
@@ -671,6 +707,47 @@ async def internal_receive_calibration_tile(
         "preview_size": preview_size,
         "calibration": state,
     }
+
+
+_THUMB_MAX_PX = 480  # longest side for tile thumbnails served to the browser
+
+
+def _make_thumb_bytes(src: Path, max_px: int = _THUMB_MAX_PX) -> bytes | None:
+    import cv2  # noqa: PLC0415
+    img = cv2.imread(str(src))
+    if img is None:
+        return None
+    h, w = img.shape[:2]
+    scale = max_px / max(h, w)
+    if scale < 1.0:
+        img = cv2.resize(img, (max(1, round(w * scale)), max(1, round(h * scale))), interpolation=cv2.INTER_AREA)
+    ok, buf = cv2.imencode(".jpg", img, [cv2.IMWRITE_JPEG_QUALITY, 82])
+    return bytes(buf) if ok else None
+
+
+@app.get("/api/jobs/{job_id}/tiles/{stem}/thumb")
+def api_get_tile_thumb(job_id: str, stem: str):
+    tiles_dir = _jobs_dir / job_id / "tiles"
+    src = tiles_dir / f"{stem}_fast_preview.jpg"
+    if not src.exists():
+        src = tiles_dir / f"{stem}.jpg"
+    if not src.exists():
+        raise HTTPException(status_code=404, detail="Tile preview not found")
+    data = _make_thumb_bytes(src)
+    if data is None:
+        raise HTTPException(status_code=500, detail="Could not generate thumbnail")
+    return Response(content=data, media_type="image/jpeg")
+
+
+@app.get("/api/jobs/{job_id}/tiles/{stem}/processed_thumb")
+def api_get_processed_tile_thumb(job_id: str, stem: str):
+    src = _jobs_dir / job_id / "processed_tiles" / stem / f"{stem}_stage4_final_finish.png"
+    if not src.exists():
+        raise HTTPException(status_code=404, detail="Processed tile not found")
+    data = _make_thumb_bytes(src)
+    if data is None:
+        raise HTTPException(status_code=500, detail="Could not generate thumbnail")
+    return Response(content=data, media_type="image/jpeg")
 
 
 @app.get("/api/jobs/{job_id}/tiles")
@@ -684,16 +761,18 @@ def api_get_job_tiles(job_id: str):
     for path in sorted(tiles_dir.glob("row_*_col_*.dng")) if tiles_dir.exists() else []:
         stem = path.stem
         preview = tiles_dir / f"{stem}.jpg"
+        fast_preview = tiles_dir / f"{stem}_fast_preview.jpg"
         final_png = proc_root / stem / f"{stem}_stage4_final_finish.png"
+        served_preview = fast_preview if fast_preview.exists() else preview
         tiles.append(
             {
                 "stem": stem,
                 "raw": path.name,
                 "raw_size": path.stat().st_size,
-                "preview": preview.name if preview.exists() else None,
-                "preview_url": f"/job-files/{job_id}/tiles/{stem}.jpg" if preview.exists() else None,
+                "preview": served_preview.name if served_preview.exists() else None,
+                "preview_url": f"/api/jobs/{job_id}/tiles/{stem}/thumb" if served_preview.exists() else None,
                 "processed_url": (
-                    f"/job-files/{job_id}/processed_tiles/{stem}/{stem}_stage4_final_finish.png"
+                    f"/api/jobs/{job_id}/tiles/{stem}/processed_thumb"
                     if final_png.exists()
                     else None
                 ),
@@ -937,7 +1016,10 @@ def api_dev_calibration_capture_from_pi(kind_name: str):
 @app.delete("/api/dev/calibration/{kind_name}")
 def api_dev_calibration_clear(kind_name: str):
     kind = _resolve_calibration_kind(kind_name)
-    return calibration_store.clear(kind)
+    state = calibration_store.clear(kind)
+    if kind.name == calibration_store.BACKLIGHT.name:
+        flat_field_maps.clear()
+    return state
 
 
 @app.get("/api/dev/calibration/{kind_name}/artifact")
@@ -947,3 +1029,33 @@ def api_dev_calibration_artifact(kind_name: str):
     if path is None:
         raise HTTPException(status_code=404, detail=f"No {kind_name} DNG available")
     return FileResponse(path, media_type="image/x-adobe-dng", filename=path.name)
+
+
+@app.get("/api/dev/flat_field_config")
+def api_get_flat_field_config():
+    return flat_field_config.load()
+
+
+@app.post("/api/dev/flat_field_config")
+def api_set_flat_field_config(body: dict):
+    try:
+        config = flat_field_config.save(body)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    started = _start_flat_field_map_rebuild("flat_field_config_updated")
+    return {"config": config, "flat_maps": {**flat_field_maps.status(), "rebuild_started": started}}
+
+
+@app.get("/api/dev/flat_field_maps/status")
+def api_get_flat_field_map_status():
+    with _flat_map_lock:
+        build_state = dict(_flat_map_state)
+    return {**flat_field_maps.status(), "build_state": build_state}
+
+
+@app.post("/api/dev/flat_field_maps/rebuild")
+def api_rebuild_flat_field_maps():
+    started = _start_flat_field_map_rebuild("manual_dev_rebuild")
+    with _flat_map_lock:
+        build_state = dict(_flat_map_state)
+    return {**flat_field_maps.status(), "rebuild_started": started, "build_state": build_state}

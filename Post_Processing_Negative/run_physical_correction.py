@@ -16,11 +16,13 @@ from negative_physical.color_refinement import apply_stage3_pseudo_lut_color_ref
 from negative_physical.evaluator_agent import FlatFieldEvaluatorAgent, load_env_file
 from negative_physical.final_finish import apply_stage4_final_finish_and_export
 from negative_physical.flat_field import (
+    FlatFieldModel,
     apply_flat_field,
     build_flat_model,
     diagnose_flat_correction,
 )
 from negative_physical.negative_inversion import (
+    base_reference_from_dict,
     base_reference_to_dict,
     estimate_base_reference,
     process_negative_stages,
@@ -71,8 +73,21 @@ def main() -> None:
             "as a compatibility alias."
         ),
     )
+    parser.add_argument(
+        "--flat-map",
+        type=Path,
+        default=None,
+        help="Optional precomputed Bayer illumination .npy map matching --frame.",
+    )
+    parser.add_argument(
+        "--flat-map-metadata",
+        type=Path,
+        default=None,
+        help="JSON sidecar for --flat-map. Required when --flat-map is used.",
+    )
     parser.add_argument("--output-dir", type=Path, default=DEFAULT_OUTPUT_DIR)
     parser.add_argument("--reference-layout", type=Path, default=None)
+    parser.add_argument("--global-params-json", type=Path, default=None)
     parser.add_argument("--base-frame", type=Path, default=None)
     parser.add_argument("--frame", type=Path, action="append", default=None)
     parser.add_argument(
@@ -523,10 +538,14 @@ def main() -> None:
     output_dir = args.output_dir.resolve()
     backlight_path = _resolve_backlight_path(input_dir, args.backlight_frame)
     base_frame_path = _resolve_base_frame_path(input_dir, args.base_frame)
+    global_params = _load_global_params(args.global_params_json)
     reference_layout = (
         args.reference_layout or (input_dir / "reference_layout.json")
     ).resolve()
-    reference_rois = rois_to_dicts(load_reference_layout(reference_layout))
+    if global_params.get("base_reference") and not reference_layout.exists():
+        reference_rois = []
+    else:
+        reference_rois = rois_to_dicts(load_reference_layout(reference_layout))
     frame_paths = _resolve_frame_paths(input_dir, args.frame, base_frame_path)
     film_content_bbox = _parse_bbox_arg(args.film_content_bbox)
     agent_evaluator_enabled = bool(args.agent_evaluator and not args.no_agent_evaluator)
@@ -602,6 +621,7 @@ def main() -> None:
         "final_sharpen_amount": float(args.stage4_final_sharpen_amount),
         "master_output_mode": args.stage4_master_output_mode,
     }
+    _apply_global_stage_params(global_params, stage3_params, stage4_params)
     stage4_report_params = dict(stage4_params)
     stage4_report_params["debug_png_enabled"] = not bool(args.skip_stage4_debug_png)
 
@@ -688,6 +708,8 @@ def main() -> None:
         "reference_rois": reference_rois,
         "film_content_bbox": film_content_bbox,
         "base_reference": None,
+        "global_params_json": str(args.global_params_json.resolve()) if args.global_params_json else None,
+        "global_params_applied": bool(global_params),
         "base_frame_result": None,
         "frames": [],
         "warnings": [],
@@ -700,11 +722,20 @@ def main() -> None:
         if film_content_bbox is not None
         else flat_frame_full
     )
-    flat_model = build_flat_model(
-        flat_frame,
-        sigma_frac=args.flat_sigma_frac,
-        max_side=args.flat_max_side,
-    )
+    if args.flat_map:
+        flat_model = _load_flat_model_from_map(args.flat_map, args.flat_map_metadata)
+        if film_content_bbox is not None:
+            flat_model = _crop_flat_model(flat_model, film_content_bbox)
+        report["flat_map_path"] = str(args.flat_map.resolve())
+        report["flat_map_metadata_path"] = (
+            str(args.flat_map_metadata.resolve()) if args.flat_map_metadata else None
+        )
+    else:
+        flat_model = build_flat_model(
+            flat_frame,
+            sigma_frac=args.flat_sigma_frac,
+            max_side=args.flat_max_side,
+        )
     report["flat_metadata"] = flat_frame.metadata
     report["flat_model"] = flat_model.diagnostics
 
@@ -727,41 +758,46 @@ def main() -> None:
             enabled=agent_evaluator_enabled,
         )
 
-    print(f"Processing base reference frame: {base_frame_path.name}")
-    base_frame_full = load_raw_bayer(base_frame_path)
-    base_frame, base_flat_frame, base_reference_rois = _prepare_base_reference_frames(
-        base_frame_full,
-        flat_frame_full,
-        reference_rois,
-    )
-    base_flat_model = build_flat_model(
-        base_flat_frame,
-        sigma_frac=args.flat_sigma_frac,
-        max_side=args.flat_max_side,
-    )
-    base_frame_result = _process_frame_with_evaluator(
-        base_frame,
-        base_flat_model,
-        evaluator,
-        output_dir,
-        reference_rois,
-        initial_strength=args.flat_strength,
-        max_iterations=args.max_iterations,
-        min_strength=args.min_flat_strength,
-        max_strength=args.max_flat_strength,
-        preview_gamma=args.preview_gamma,
-        strength_search_enabled=strength_search_enabled,
-        save_npy=not args.skip_npy,
-        save_linear16=not args.skip_linear16,
-        save_flat_corrected_preview=not args.skip_flat_corrected_preview,
-    )
-    base_rgb_linear = _rgb_for_selected_flat_result(base_frame, base_flat_model, base_frame_result)
-    base_reference = estimate_base_reference(
-        base_rgb_linear,
-        base_reference_rois,
-        source_frame=str(base_frame_path),
-        roi_name="base",
-    )
+    if global_params.get("base_reference"):
+        print("Using global base reference from parameter bundle")
+        base_frame_result = {"mode": "global_fixed_base_reference", "warnings": []}
+        base_reference = base_reference_from_dict(global_params["base_reference"])
+    else:
+        print(f"Processing base reference frame: {base_frame_path.name}")
+        base_frame_full = load_raw_bayer(base_frame_path)
+        base_frame, base_flat_frame, base_reference_rois = _prepare_base_reference_frames(
+            base_frame_full,
+            flat_frame_full,
+            reference_rois,
+        )
+        base_flat_model = build_flat_model(
+            base_flat_frame,
+            sigma_frac=args.flat_sigma_frac,
+            max_side=args.flat_max_side,
+        )
+        base_frame_result = _process_frame_with_evaluator(
+            base_frame,
+            base_flat_model,
+            evaluator,
+            output_dir,
+            reference_rois,
+            initial_strength=args.flat_strength,
+            max_iterations=args.max_iterations,
+            min_strength=args.min_flat_strength,
+            max_strength=args.max_flat_strength,
+            preview_gamma=args.preview_gamma,
+            strength_search_enabled=strength_search_enabled,
+            save_npy=not args.skip_npy,
+            save_linear16=not args.skip_linear16,
+            save_flat_corrected_preview=not args.skip_flat_corrected_preview,
+        )
+        base_rgb_linear = _rgb_for_selected_flat_result(base_frame, base_flat_model, base_frame_result)
+        base_reference = estimate_base_reference(
+            base_rgb_linear,
+            base_reference_rois,
+            source_frame=str(base_frame_path),
+            roi_name="base",
+        )
     if not args.skip_intermediate_previews:
         save_base_roi_overlay(
             base_rgb_linear,
@@ -824,6 +860,7 @@ def main() -> None:
             stage3_params=stage3_params,
             save_stage3_debug_png=not args.skip_stage3_debug_png,
             stage4_params=stage4_params,
+            global_negative_stats=global_params.get("negative_stats"),
             save_stage4_debug_png=not args.skip_stage4_debug_png,
             save_npy=not args.skip_npy,
             save_linear16=not args.skip_linear16,
@@ -913,6 +950,7 @@ def main() -> None:
             stage3_params=stage3_params,
             save_stage3_debug_png=not args.skip_stage3_debug_png,
             stage4_params=stage4_params,
+            global_negative_stats=global_params.get("negative_stats"),
             save_stage4_debug_png=not args.skip_stage4_debug_png,
             save_npy=not args.skip_npy,
             save_linear16=not args.skip_linear16,
@@ -1064,6 +1102,36 @@ def _process_frame_with_evaluator(
     return final_diagnostics
 
 
+def _load_global_params(path: Path | None) -> dict[str, Any]:
+    if path is None:
+        return {}
+    params_path = path.resolve()
+    if not params_path.exists():
+        raise FileNotFoundError(f"Global parameter file not found: {params_path}")
+    payload = json.loads(params_path.read_text(encoding="utf-8"))
+    if not isinstance(payload, dict):
+        raise ValueError(f"Global parameter file must contain a JSON object: {params_path}")
+    return payload
+
+
+def _apply_global_stage_params(
+    global_params: dict[str, Any],
+    stage3_params: dict[str, Any],
+    stage4_params: dict[str, Any],
+) -> None:
+    stage2 = global_params.get("stage2") or {}
+    stage3 = global_params.get("stage3") or {}
+    stage4 = global_params.get("stage4") or {}
+    # Stage 2 params are passed individually into _save_negative_stage_outputs,
+    # so keep them in the global bundle and apply them there.
+    del stage2
+    for key in ("lab_input_fixed_scale", "preview_fixed_scale"):
+        if key in stage3:
+            stage3_params[key] = stage3[key]
+    if "display_fixed_scale" in stage4:
+        stage4_params["display_fixed_scale"] = stage4["display_fixed_scale"]
+
+
 def _prepare_base_reference_frames(
     base_frame,
     flat_frame,
@@ -1100,6 +1168,70 @@ def _first_roi_bbox(
         if isinstance(roi.get("bbox"), list):
             return [int(v) for v in roi["bbox"]]
     return None
+
+
+def _load_flat_model_from_map(map_path: Path, metadata_path: Path | None) -> FlatFieldModel:
+    if metadata_path is None:
+        metadata_path = map_path.with_suffix(".json")
+    if not map_path.exists():
+        raise FileNotFoundError(f"Flat-field map not found: {map_path}")
+    if not metadata_path.exists():
+        raise FileNotFoundError(f"Flat-field map metadata not found: {metadata_path}")
+    meta = json.loads(metadata_path.read_text(encoding="utf-8"))
+    illumination = np.load(map_path).astype(np.float32)
+    return FlatFieldModel(
+        illumination_map=illumination,
+        cfa_pattern=str(meta["cfa_pattern"]),
+        cfa_pattern_matrix=tuple(tuple(str(v) for v in row) for row in meta["cfa_pattern_matrix"]),
+        cfa_index_matrix=tuple(tuple(int(v) for v in row) for row in meta["cfa_index_matrix"]),
+        width=int(meta["width"]),
+        height=int(meta["height"]),
+        sigma_frac=float(meta["sigma_frac"]),
+        max_side=int(meta["max_side"]),
+        plane_stats=meta.get("plane_stats", []),
+        diagnostics={**meta.get("diagnostics", {}), "precomputed_flat_map": str(map_path)},
+    )
+
+
+def _crop_flat_model(model: FlatFieldModel, bbox: list[int] | tuple[int, int, int, int]) -> FlatFieldModel:
+    x0, y0, x1, y1 = _align_even_bbox(bbox, model.width, model.height)
+    illumination = model.illumination_map[y0:y1, x0:x1].copy().astype(np.float32)
+    diagnostics = dict(model.diagnostics)
+    diagnostics["crop_bbox"] = [int(x0), int(y0), int(x1), int(y1)]
+    diagnostics["precomputed_flat_map_cropped"] = True
+    return FlatFieldModel(
+        illumination_map=illumination,
+        cfa_pattern=model.cfa_pattern,
+        cfa_pattern_matrix=model.cfa_pattern_matrix,
+        cfa_index_matrix=model.cfa_index_matrix,
+        width=int(x1 - x0),
+        height=int(y1 - y0),
+        sigma_frac=model.sigma_frac,
+        max_side=model.max_side,
+        plane_stats=model.plane_stats,
+        diagnostics=diagnostics,
+    )
+
+
+def _align_even_bbox(
+    bbox: list[int] | tuple[int, int, int, int],
+    width: int,
+    height: int,
+) -> tuple[int, int, int, int]:
+    x0, y0, x1, y1 = [int(round(v)) for v in bbox]
+    x0 = max(0, min(x0, width - 2))
+    y0 = max(0, min(y0, height - 2))
+    x1 = max(x0 + 2, min(x1, width))
+    y1 = max(y0 + 2, min(y1, height))
+    x0 -= x0 % 2
+    y0 -= y0 % 2
+    x1 -= x1 % 2
+    y1 -= y1 % 2
+    if x1 <= x0:
+        x1 = min(width - (width % 2), x0 + 2)
+    if y1 <= y0:
+        y1 = min(height - (height % 2), y0 + 2)
+    return int(x0), int(y0), int(x1), int(y1)
 
 
 def _save_flat_corrected_outputs(
@@ -1194,6 +1326,7 @@ def _save_negative_stage_outputs(
     stage3_params: dict[str, Any],
     save_stage3_debug_png: bool,
     stage4_params: dict[str, Any],
+    global_negative_stats: dict[str, Any] | None,
     save_stage4_debug_png: bool,
     save_npy: bool,
     save_linear16: bool,
@@ -1215,6 +1348,7 @@ def _save_negative_stage_outputs(
         neutral_balance=color_neutral_balance,
         inversion_channel_gains=inversion_channel_gains,
         inversion_output_percentile=inversion_output_percentile,
+        fixed_stats=global_negative_stats,
     )
     stage10_matrix = (
         stage10_empirical_matrix
@@ -1263,6 +1397,8 @@ def _save_negative_stage_outputs(
         preview_percentile=stage2_preview_percentile,
         preview_gamma=stage2_preview_gamma,
         preview_eps=stage2_preview_eps,
+        lab_input_fixed_scale=(global_negative_stats or {}).get("stage2_lab_input_scale"),
+        preview_fixed_scale=(global_negative_stats or {}).get("stage2_preview_scale"),
     )
     stage3 = apply_stage3_pseudo_lut_color_refinement(
         stage2.stage2_linear_output,

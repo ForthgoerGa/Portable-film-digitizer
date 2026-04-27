@@ -109,6 +109,7 @@ def process_negative_stages(
     neutral_balance: bool = True,
     inversion_channel_gains: np.ndarray | list[float] | None = None,
     inversion_output_percentile: float = 99.5,
+    fixed_stats: dict[str, Any] | None = None,
 ) -> NegativeStageResult:
     """Run [6] base correction, [7] density, [8] unmixing, and [9] inversion."""
 
@@ -119,7 +120,12 @@ def process_negative_stages(
     transmission = np.clip(base_corrected, _EPS, 1.0)
     density = -np.log(transmission).astype(np.float32)
 
-    density_upper = np.percentile(density.reshape(-1, 3), density_percentile, axis=0).astype(np.float32)
+    fixed_stats = fixed_stats or {}
+    density_upper = _fixed_or_percentile(
+        density,
+        fixed_stats.get("density_upper_rgb"),
+        density_percentile,
+    )
     density_upper = np.clip(density_upper, 0.05, None)
     density_norm = np.clip(density / density_upper[np.newaxis, np.newaxis, :], 0.0, 1.0)
 
@@ -128,15 +134,16 @@ def process_negative_stages(
         matrix=color_unmix_matrix,
         strength=color_unmix_strength,
         neutral_balance=neutral_balance,
+        fixed_neutral_gains=fixed_stats.get("color_unmix_neutral_gains"),
         clip_input=False,
         output_min=0.0,
         output_max=None,
     )
-    density_unmixed_upper = np.percentile(
-        density_unmixed.reshape(-1, 3),
+    density_unmixed_upper = _fixed_or_percentile(
+        density_unmixed,
+        fixed_stats.get("density_unmixed_upper_rgb"),
         density_percentile,
-        axis=0,
-    ).astype(np.float32)
+    )
     density_unmixed_upper = np.clip(density_unmixed_upper, 0.05, None)
     density_unmixed_norm = np.clip(
         density_unmixed / density_unmixed_upper[np.newaxis, np.newaxis, :],
@@ -148,6 +155,7 @@ def process_negative_stages(
         density_unmixed_norm,
         channel_gains=inversion_channel_gains,
         output_percentile=inversion_output_percentile,
+        fixed_positive_upper=fixed_stats.get("inversion_positive_upper_rgb"),
     )
 
     diagnostics = {
@@ -184,6 +192,7 @@ def invert_density_expm1(
     density_unmixed_norm: np.ndarray,
     channel_gains: np.ndarray | list[float] | None = None,
     output_percentile: float = 99.5,
+    fixed_positive_upper: np.ndarray | list[float] | None = None,
 ) -> tuple[np.ndarray, dict[str, Any]]:
     """Invert normalized density with an expm1 curve and per-channel normalization."""
 
@@ -193,7 +202,7 @@ def invert_density_expm1(
 
     scaled_density = np.clip(density * gains[np.newaxis, np.newaxis, :], 0.0, 8.0)
     positive = np.expm1(scaled_density).astype(np.float32)
-    upper = np.percentile(positive.reshape(-1, 3), output_percentile, axis=0).astype(np.float32)
+    upper = _fixed_or_percentile(positive, fixed_positive_upper, output_percentile)
     upper = np.clip(upper, _EPS, None)
     normalized = np.clip(positive / upper[np.newaxis, np.newaxis, :], 0.0, 1.0).astype(np.float32)
 
@@ -202,6 +211,7 @@ def invert_density_expm1(
         "channel_gains": [float(v) for v in gains],
         "output_percentile": output_percentile,
         "positive_upper_rgb": [float(v) for v in upper],
+        "positive_upper_source": "global_fixed" if fixed_positive_upper is not None else "per_frame_percentile",
         "positive_p95_rgb": [float(v) for v in np.percentile(positive.reshape(-1, 3), 95.0, axis=0)],
         "normalized_mean_rgb": [float(v) for v in normalized.mean(axis=(0, 1))],
         "normalized_p95_rgb": [float(v) for v in np.percentile(normalized.reshape(-1, 3), 95.0, axis=0)],
@@ -215,6 +225,7 @@ def apply_color_unmix(
     matrix: np.ndarray | list[float] | list[list[float]] | None = None,
     strength: float = 0.65,
     neutral_balance: bool = True,
+    fixed_neutral_gains: np.ndarray | list[float] | None = None,
     clip_input: bool = True,
     output_min: float | None = 0.0,
     output_max: float | None = 1.0,
@@ -243,7 +254,15 @@ def apply_color_unmix(
         "gains": [1.0, 1.0, 1.0],
     }
     if neutral_balance:
-        gains, balance_diagnostics = _estimate_mid_neutral_gains(blended)
+        if fixed_neutral_gains is not None:
+            gains = _normalise_channel_vector(fixed_neutral_gains, np.ones(3, dtype=np.float32))
+            balance_diagnostics = {
+                "enabled": True,
+                "mode": "global_fixed",
+                "gains": [float(v) for v in gains],
+            }
+        else:
+            gains, balance_diagnostics = _estimate_mid_neutral_gains(blended)
         blended = blended * gains[np.newaxis, np.newaxis, :]
         if output_min is not None:
             blended = np.maximum(blended, float(output_min))
@@ -271,6 +290,30 @@ def apply_color_unmix(
 
 def base_reference_to_dict(base_reference: BaseReference) -> dict[str, Any]:
     return asdict(base_reference)
+
+
+def base_reference_from_dict(payload: dict[str, Any]) -> BaseReference:
+    return BaseReference(
+        base_rgb=[float(v) for v in payload["base_rgb"]],
+        roi_name=str(payload.get("roi_name", "base")),
+        bbox=[int(v) for v in payload.get("bbox", [0, 0, 0, 0])],
+        sample_count=int(payload.get("sample_count", 0)),
+        source_frame=str(payload.get("source_frame", "global_params")),
+        stats=dict(payload.get("stats", {})),
+    )
+
+
+def _fixed_or_percentile(
+    data: np.ndarray,
+    fixed_rgb: np.ndarray | list[float] | None,
+    percentile: float,
+) -> np.ndarray:
+    if fixed_rgb is not None:
+        arr = np.asarray(fixed_rgb, dtype=np.float32)
+        if arr.shape != (3,):
+            raise ValueError(f"Expected fixed RGB stats with shape (3,), got {arr.shape}")
+        return np.clip(arr, 0.05, None).astype(np.float32)
+    return np.percentile(data.reshape(-1, 3), percentile, axis=0).astype(np.float32)
 
 
 def save_base_roi_overlay(

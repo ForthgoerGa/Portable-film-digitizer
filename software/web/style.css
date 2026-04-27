@@ -307,6 +307,46 @@ button:disabled {
     display: block;
 }
 
+/* Classification banner (main page) */
+.clf-banner {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    flex-wrap: wrap;
+    padding-bottom: 14px;
+    margin-bottom: 14px;
+    border-bottom: 1px solid #e4ebf0;
+}
+.clf-label {
+    font-size: 0.78rem;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    color: #7a8a99;
+}
+.clf-type-chip {
+    padding: 4px 14px;
+    border-radius: 999px;
+    font-size: 0.82rem;
+    font-weight: 700;
+    color: #fff;
+}
+.clf-type-chip.negative { background: #0f766e; }
+.clf-type-chip.positive { background: #b45309; }
+.clf-type-chip.instax   { background: #7c3aed; }
+.clf-type-chip.unknown  { background: #526170; }
+.clf-raw-label {
+    font-size: 0.82rem;
+    font-weight: 600;
+    color: #344556;
+    font-family: Consolas, "Courier New", monospace;
+}
+.clf-mode-text {
+    font-size: 0.75rem;
+    color: #7a8a99;
+    font-family: Consolas, "Courier New", monospace;
+}
+
 /* Tile grids */
 .tile-grid {
     display: grid;

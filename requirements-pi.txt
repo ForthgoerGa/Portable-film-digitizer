@@ -1,5 +1,7 @@
-# Pi scanner server runtime. This mirrors ../../requirements-pi.txt so the Pi
-# can install dependencies from inside software/src.
+# Raspberry Pi scanner server runtime.
+#
+# Install Pi camera/GPIO system packages with apt first:
+#   sudo apt install -y python3-picamera2 python3-libcamera python3-rpi.gpio
 fastapi>=0.110
 uvicorn[standard]>=0.29
 pydantic>=2.0

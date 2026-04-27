@@ -30,6 +30,7 @@ STAGE3_DEFAULT_PARAMS: dict[str, Any] = {
     "lab_input_percentile": 99.5,
     "lab_input_gamma": 2.2,
     "lab_input_eps": 1e-6,
+    "lab_input_fixed_scale": None,
     "luma_chroma_enabled": True,
     "sat_base": 0.92,
     "sat_mid_gain": 0.34,
@@ -60,6 +61,7 @@ STAGE3_DEFAULT_PARAMS: dict[str, Any] = {
     "preview_percentile": 99.5,
     "preview_gamma": 2.2,
     "preview_eps": 1e-6,
+    "preview_fixed_scale": None,
 }
 
 
@@ -190,11 +192,12 @@ def make_stage3_preview_output(
     preview_percentile: float = 99.5,
     preview_gamma: float = 2.2,
     preview_eps: float = 1e-6,
+    fixed_scale: float | None = None,
 ) -> np.ndarray:
     """Create the display/debug preview from Stage 3 linear output."""
 
     x = np.maximum(np.asarray(stage3_linear_output, dtype=np.float32), 0.0)
-    scale = _safe_percentile(x, preview_percentile)
+    scale = float(fixed_scale) if fixed_scale is not None else _safe_percentile(x, preview_percentile)
     x = x / (scale + max(float(preview_eps), 1e-12))
     x = np.clip(x, 0.0, 1.0)
     gamma = max(float(preview_gamma), 1e-6)
@@ -212,6 +215,7 @@ def _stage3_pseudo_lut_color_refinement_impl(
         percentile=float(params["lab_input_percentile"]),
         gamma=float(params["lab_input_gamma"]),
         eps=float(params["lab_input_eps"]),
+        fixed_scale=params.get("lab_input_fixed_scale"),
     )
     lab = _srgb_like_to_lab(img_lab_in, gamma=float(params["lab_input_gamma"]))
     L = (lab[..., 0] / 100.0).astype(np.float32)
@@ -267,6 +271,7 @@ def _stage3_pseudo_lut_color_refinement_impl(
             preview_percentile=float(params["preview_percentile"]),
             preview_gamma=float(params["preview_gamma"]),
             preview_eps=float(params["preview_eps"]),
+            fixed_scale=params.get("preview_fixed_scale"),
         )
         if bool(params["preview_enabled"])
         else np.clip(stage3_linear_output, 0.0, 1.0).astype(np.float32)
@@ -332,9 +337,10 @@ def _prepare_lab_input(
     percentile: float,
     gamma: float,
     eps: float,
+    fixed_scale: float | None = None,
 ) -> tuple[np.ndarray, dict[str, Any]]:
     x = np.maximum(img.astype(np.float32), 0.0)
-    scale = _safe_percentile(x, percentile)
+    scale = float(fixed_scale) if fixed_scale is not None else _safe_percentile(x, percentile)
     x = x / (scale + max(float(eps), 1e-12))
     x = np.clip(x, 0.0, 1.0)
     gamma = max(float(gamma), 1e-6)
@@ -344,6 +350,7 @@ def _prepare_lab_input(
         "mode": "preview_style_encoded",
         "percentile": float(percentile),
         "scale": float(scale),
+        "scale_source": "global_fixed" if fixed_scale is not None else "per_frame_percentile",
         "gamma": gamma,
         "input_mean_rgb": [float(v) for v in x.mean(axis=(0, 1))],
         "input_p95_rgb": [float(v) for v in np.percentile(x.reshape(-1, 3), 95.0, axis=0)],

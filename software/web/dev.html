@@ -239,9 +239,176 @@
             word-break: break-word;
         }
 
+        /* Classification & Detection */
+        .insp-section-title {
+            font-size: 0.78rem;
+            font-weight: 700;
+            text-transform: uppercase;
+            letter-spacing: 0.06em;
+            color: #7a8a99;
+            padding: 10px 0 8px;
+            border-top: 1px solid #e4ebf0;
+            margin-top: 4px;
+        }
+        .clf-result-row {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            flex-wrap: wrap;
+            margin-bottom: 12px;
+        }
+        .clf-type-chip {
+            padding: 5px 14px;
+            border-radius: 999px;
+            font-size: 0.82rem;
+            font-weight: 700;
+            color: #fff;
+            letter-spacing: 0.02em;
+        }
+        .clf-type-chip.negative { background: #0f766e; }
+        .clf-type-chip.positive { background: #b45309; }
+        .clf-type-chip.instax   { background: #7c3aed; }
+        .clf-type-chip.unknown  { background: #526170; }
+        .clf-raw-label {
+            font-size: 0.82rem;
+            font-weight: 600;
+            color: #344556;
+            font-family: Consolas, "Courier New", monospace;
+        }
+        .clf-mode-text {
+            font-size: 0.75rem;
+            color: #7a8a99;
+            font-family: Consolas, "Courier New", monospace;
+        }
+        .bbox-tiles-row {
+            display: flex;
+            gap: 12px;
+            flex-wrap: wrap;
+        }
+        .bbox-tile-card {
+            display: flex;
+            flex-direction: column;
+            gap: 6px;
+            width: 200px;
+        }
+        .bbox-img-wrap {
+            position: relative;
+            width: 200px;
+            line-height: 0;
+            border-radius: 4px;
+            overflow: hidden;
+            background: #111;
+        }
+        .bbox-tile-img {
+            display: block;
+            width: 100%;
+            height: auto;
+        }
+        .bbox-canvas {
+            position: absolute;
+            top: 0; left: 0;
+            width: 100%; height: 100%;
+            pointer-events: none;
+        }
+        .bbox-meta {
+            display: flex;
+            flex-direction: column;
+            gap: 2px;
+        }
+        .bbox-stem {
+            font-size: 0.75rem;
+            font-family: Consolas, "Courier New", monospace;
+            color: #344556;
+            font-weight: 600;
+        }
+        .bbox-conf {
+            font-size: 0.75rem;
+            color: #1aa35f;
+            font-weight: 600;
+        }
+        .bbox-conf.low { color: #d14343; }
+        .bbox-coords {
+            font-size: 0.68rem;
+            color: #7a8a99;
+            font-family: Consolas, "Courier New", monospace;
+        }
+        .global-base-card {
+            display: grid;
+            grid-template-columns: auto 1fr;
+            gap: 10px 12px;
+            align-items: center;
+            padding: 10px 12px;
+            margin: 0 0 12px;
+            background: #f7fafc;
+            border: 1px solid #d9e2ea;
+            border-radius: 6px;
+        }
+        .base-swatch {
+            width: 42px;
+            height: 42px;
+            border-radius: 6px;
+            border: 1px solid rgba(0,0,0,0.2);
+            box-shadow: inset 0 0 0 1px rgba(255,255,255,0.35);
+        }
+        .global-base-lines {
+            display: flex;
+            flex-direction: column;
+            gap: 3px;
+            font-size: 0.76rem;
+            color: #344556;
+            font-family: Consolas, "Courier New", monospace;
+        }
+        .global-base-warning {
+            color: #b45309;
+            font-weight: 700;
+        }
+
         @media (max-width: 720px) {
-            .calib-grid { grid-template-columns: 1fr; }
             .inspect-artifacts { grid-template-columns: 1fr; }
+        }
+
+        /* Flat-field params */
+        .ff-grid {
+            display: grid;
+            gap: 12px;
+        }
+        .ff-row {
+            display: grid;
+            grid-template-columns: 130px 100px 1fr;
+            grid-template-rows: auto auto;
+            column-gap: 14px;
+            row-gap: 2px;
+            align-items: center;
+        }
+        .ff-label {
+            font-size: 0.88rem;
+            font-weight: 600;
+            color: #344556;
+        }
+        .ff-input {
+            font: inherit;
+            font-size: 0.88rem;
+            padding: 6px 8px;
+            border: 1px solid #c9d4de;
+            border-radius: 5px;
+            background: #f7fafc;
+            color: #17212b;
+            width: 100%;
+        }
+        .ff-input:focus {
+            outline: 2px solid #0f766e;
+            outline-offset: 1px;
+        }
+        .ff-range {
+            font-size: 0.76rem;
+            color: #7a8a99;
+            font-family: Consolas, "Courier New", monospace;
+        }
+        .ff-hint {
+            grid-column: 1 / -1;
+            font-size: 0.76rem;
+            color: #7a8a99;
+            line-height: 1.4;
         }
     </style>
 </head>
@@ -272,72 +439,65 @@
             <div class="card-header">
                 <div>
                     <h2>Calibration</h2>
-                    <p class="meta-line" style="margin-top:3px">Backlight DNG is required; base frame is optional fallback.</p>
+                    <p class="meta-line" style="margin-top:3px">Backlight tile set - one DNG per grid position, captured from Pi.</p>
                 </div>
                 <button id="refreshCalibBtn" class="ghost small-btn">Refresh</button>
             </div>
             <div class="card-body">
-                <div class="calib-grid">
-                    <div class="calib-card">
-                        <div class="calib-card-title">Backlight Frame</div>
-                        <div><span id="backlightChip" class="status-chip">Checking...</span></div>
-                        <div class="controls-row">
-                            <button id="backlightCapturePiBtn" class="accent small-btn">Capture Tile Set from Pi</button>
-                            <label for="backlightUpload" style="cursor:pointer">
-                                <span class="ghost" style="display:inline-block;padding:7px 12px;border:1px solid #c9d4de;border-radius:6px;font-size:0.85rem;font-weight:600;background:#f7fafc">Upload DNG</span>
-                            </label>
-                            <input id="backlightUpload" type="file" accept=".dng,image/x-adobe-dng" class="file-input" style="display:none" />
-                            <button id="backlightClearBtn" class="ghost small-btn">Clear</button>
-                        </div>
-                        <div id="backlightUploadStatus" class="camera-status"></div>
+                <div class="calib-card" style="max-width:480px">
+                    <div class="calib-card-title">Backlight Frame</div>
+                    <div><span id="backlightChip" class="status-chip">Checking...</span></div>
+                    <div class="controls-row">
+                        <button id="backlightCapturePiBtn" class="accent small-btn">Capture Tile Set from Pi</button>
+                        <label for="backlightUpload" style="cursor:pointer">
+                            <span class="ghost" style="display:inline-block;padding:7px 12px;border:1px solid #c9d4de;border-radius:6px;font-size:0.85rem;font-weight:600;background:#f7fafc">Upload DNG</span>
+                        </label>
+                        <input id="backlightUpload" type="file" accept=".dng,image/x-adobe-dng" class="file-input" style="display:none" />
+                        <button id="backlightClearBtn" class="ghost small-btn">Clear</button>
                     </div>
-                    <div class="calib-card">
-                        <div class="calib-card-title">Base Frame</div>
-                        <div><span id="baseFrameChip" class="status-chip">Checking...</span></div>
-                        <div class="controls-row">
-                            <button id="baseFrameCapturePiBtn" class="accent small-btn">Capture from Pi</button>
-                            <label for="baseFrameUpload" style="cursor:pointer">
-                                <span class="ghost" style="display:inline-block;padding:7px 12px;border:1px solid #c9d4de;border-radius:6px;font-size:0.85rem;font-weight:600;background:#f7fafc">Upload DNG</span>
-                            </label>
-                            <input id="baseFrameUpload" type="file" accept=".dng,image/x-adobe-dng" class="file-input" style="display:none" />
-                            <button id="baseFrameClearBtn" class="ghost small-btn">Clear</button>
-                        </div>
-                        <div id="baseFrameUploadStatus" class="camera-status"></div>
-                    </div>
-                </div>
-                <div class="branch-row">
-                    <span class="dev-status-label">Negative branch</span>
-                    <span id="negBranchChip" class="status-chip">Checking...</span>
+                    <div id="backlightUploadStatus" class="camera-status"></div>
                 </div>
             </div>
         </section>
 
-        <!-- Base ROI crop -->
+        <!-- Flat-field parameters -->
         <section class="dev-panel" style="border-radius:8px">
             <div class="card-header">
                 <div>
-                    <h2>Base ROI Crop</h2>
-                    <p class="meta-line" style="margin-top:3px">Optional manual fallback: drag a rectangle over the clear-base film area.</p>
+                    <h2>Flat-Field Correction</h2>
+                    <p class="meta-line" style="margin-top:3px">Applied to every DNG tile during negative and positive film processing.</p>
                 </div>
-                <div class="controls-row">
-                    <button id="loadPreviewBtn" class="ghost">Load Preview</button>
-                    <span id="roiMsg" class="camera-status"></span>
+                <div style="display:flex;gap:10px;align-items:center">
+                    <span id="ffSaveStatus" style="font-size:0.82rem;color:#526170"></span>
+                    <button id="ffRebuildMapsBtn" class="ghost small-btn">Rebuild Maps</button>
+                    <button id="ffApplyBtn" class="accent small-btn">Apply</button>
                 </div>
             </div>
             <div class="card-body">
-                <div id="cropPlaceholder" class="crop-placeholder">
-                    Upload a base frame DNG first to use the manual fallback crop tool.
-                </div>
-                <div id="cropWrap" style="display:none">
-                    <div class="crop-outer">
-                        <img id="cropImg" class="crop-img" alt="Base frame preview" />
-                        <canvas id="cropCanvas" class="crop-canvas"></canvas>
+                <div class="ff-grid">
+                    <div class="ff-row">
+                        <label class="ff-label" for="ffStrength">Strength</label>
+                        <input id="ffStrength" class="ff-input" type="number" min="0" max="5" step="0.05" value="1.50" />
+                        <span class="ff-range">0 – 5 &nbsp;·&nbsp; default 1.5</span>
+                        <span class="ff-hint">Raise to 1.5–2.0 for visible vignetting or spots. Values &gt;1 intentionally over-correct residual non-uniformity.</span>
                     </div>
-                </div>
-                <div id="roiCoords" class="roi-coords"></div>
-                <div class="controls-row">
-                    <button id="saveRoiBtn" class="accent" disabled>Save ROI</button>
-                    <button id="clearRoiBtn" class="ghost">Clear ROI</button>
+                    <div class="ff-row">
+                        <label class="ff-label" for="ffSigmaFrac">Sigma fraction</label>
+                        <input id="ffSigmaFrac" class="ff-input" type="number" min="0.0005" max="0.10" step="0.0005" value="0.0005" />
+                        <span class="ff-range">0.005 – 0.10 &nbsp;·&nbsp; default 0.015</span>
+                        <span class="ff-hint">Gaussian kernel width as fraction of image diagonal. Smaller values correct finer spatial variations.</span>
+                    </div>
+                    <div class="ff-row">
+                        <label class="ff-label" for="ffMaxSide">Max side (px)</label>
+                        <input id="ffMaxSide" class="ff-input" type="number" min="64" max="4096" step="64" value="1024" />
+                        <span class="ff-range">64 – 4096 &nbsp;·&nbsp; default 1024</span>
+                        <span class="ff-hint">Working resolution for illumination map estimation. Higher retains finer detail.</span>
+                    </div>
+                    <div class="ff-row">
+                        <label class="ff-label">Precomputed maps</label>
+                        <span id="ffMapChip" class="status-chip">Checking...</span>
+                        <span id="ffMapStatus" class="ff-hint">Backlight scan builds one correction map per tile. Processing reuses these maps directly.</span>
+                    </div>
                 </div>
             </div>
         </section>
@@ -355,12 +515,12 @@
                 <div id="inspectPanel" class="inspect-panel" style="display:none">
                     <div class="inspect-header">
                         <span class="dev-status-label">Job</span>
-                            <span id="inspJobId" class="inspect-job-id">-</span>
-                            <span id="inspJobState" class="status-chip">-</span>
+                        <span id="inspJobId" class="inspect-job-id">-</span>
+                        <span id="inspJobState" class="status-chip">-</span>
                         <span id="inspTimestamp" class="inspect-timestamp"></span>
                     </div>
                     <div class="progress-header">
-                            <span id="inspStageLabel" class="stage-label">-</span>
+                        <span id="inspStageLabel" class="stage-label">-</span>
                         <span id="inspProgressPct" class="progress-pct-label">0%</span>
                     </div>
                     <div class="progress-track">
@@ -369,12 +529,21 @@
                     <div id="inspStageSteps" class="stage-steps"></div>
                     <div id="inspMeta" class="processing-meta" style="display:none"></div>
                     <div id="inspError" class="error-box" style="display:none"></div>
+
+                    <!-- Classification & Detection -->
+                    <div id="inspClassDetect" style="display:none">
+                        <div class="insp-section-title">Classification &amp; Detection</div>
+                        <div id="inspClassResult" class="clf-result-row"></div>
+                        <div id="inspGlobalBase"></div>
+                        <div id="inspBboxTiles" class="bbox-tiles-row"></div>
+                    </div>
+
                     <div id="inspArtifacts" class="inspect-artifacts"></div>
                 </div>
             </div>
         </section>
 
     </main>
-    <script src="dev.js?v=2"></script>
+    <script src="dev.js?v=5"></script>
 </body>
 </html>

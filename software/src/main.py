@@ -20,6 +20,7 @@ from typing import Dict, Any
 try:
     from .coordinator import ScannerCoordinator
     from . import config as scan_config
+    from . import runtime_config
     from .config import (
         CAPTURES_DIR,
         X_SEGMENTS,
@@ -30,6 +31,7 @@ try:
 except ImportError:
     from coordinator import ScannerCoordinator
     import config as scan_config
+    import runtime_config
     from config import (
         CAPTURES_DIR,
         X_SEGMENTS,
@@ -256,12 +258,12 @@ def start_scan(request: dict):
     calibration_kind = request.get("calibration_kind")
     if not upload_url:
         job_id = request.get("job_id")
-        pc_base_url = request.get("pc_base_url") or os.getenv("PC_APP_URL")
+        pc_base_url = request.get("pc_base_url") or runtime_config.PC_APP_URL or os.getenv("PC_APP_URL")
         if job_id and pc_base_url and upload_mode != "tiles":
             upload_url = f"{pc_base_url.rstrip('/')}/internal/jobs/{job_id}/receive_stitched_raw"
     if not tile_upload_url:
         job_id = request.get("job_id")
-        pc_base_url = request.get("pc_base_url") or os.getenv("PC_APP_URL")
+        pc_base_url = request.get("pc_base_url") or runtime_config.PC_APP_URL or os.getenv("PC_APP_URL")
         if upload_mode == "tiles" and job_id and pc_base_url:
             tile_upload_url = f"{pc_base_url.rstrip('/')}/internal/jobs/{job_id}/receive_tile"
         elif upload_mode == "tiles" and calibration_kind and pc_base_url:
@@ -856,4 +858,4 @@ def shutdown_event():
 
 
 if __name__ == "__main__":
-    uvicorn.run(app, host="0.0.0.0", port=5000)
+    uvicorn.run(app, host=runtime_config.PI_SERVER_HOST, port=runtime_config.PI_SERVER_PORT)

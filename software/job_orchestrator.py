@@ -10,6 +10,7 @@ import sys
 import threading
 import time
 import uuid
+from collections import Counter
 from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
 from pathlib import Path
 from urllib.parse import urlparse
@@ -18,6 +19,8 @@ import cv2
 import numpy as np
 
 import calibration_store
+import flat_field_config
+import flat_field_maps
 
 try:
     import requests as _req
@@ -30,6 +33,33 @@ _TRANSFER_TIMEOUT_S = 180.0
 _WAIT_SLICE_S = 0.25
 _JPEG_QUALITY = 92
 _REPO_ROOT = Path(__file__).resolve().parent.parent
+_DETECTION_PREVIEW_MATRIX_E0 = np.array(
+    [
+        [0.84, 0.06, 0.02],
+        [0.06, 1.08, 0.04],
+        [0.02, 0.04, 1.18],
+    ],
+    dtype=np.float32,
+)
+_DETECTION_PREVIEW_COLOR_MODE = "flat_field_then_camera_space_white_norm_then_e0_matrix"
+_XYZ_TO_SRGB = np.array(
+    [
+        [3.2404542, -1.5371385, -0.4985314],
+        [-0.9692660, 1.8760108, 0.0415560],
+        [0.0556434, -0.2040259, 1.0572252],
+    ],
+    dtype=np.float32,
+)
+
+_STAGE_RANK: dict[str, int] = {
+    "dispatch": 0,
+    "scan": 1,
+    "stitch": 2,
+    "transfer": 3,
+    "classify": 4,
+    "process": 5,
+    "complete": 6,
+}
 
 if str(_REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(_REPO_ROOT))
@@ -58,6 +88,7 @@ def _new_job(job_id: str, job_kind: str) -> dict:
             "classification": None,
             "classifier_raw_label": None,
             "classifier_mode": None,
+            "classifier_confidence": None,
             "selected_branch": None,
             "runner_used": None,
             "current_iteration": None,
@@ -278,8 +309,18 @@ class JobOrchestrator:
             job = self._jobs.get(job_id)
             if not job:
                 return
+            new_state = updates.get("state", job.get("state", "running"))
+            is_terminal = new_state in ("cancelled", "failed")
             for key, value in updates.items():
-                if key in ("scan", "processing", "artifacts", "tile_upload") and isinstance(value, dict):
+                if key == "progress_pct" and not is_terminal:
+                    if value > (job.get("progress_pct") or 0):
+                        job[key] = value
+                elif key == "stage" and not is_terminal:
+                    cur_rank = _STAGE_RANK.get(job.get("stage", "dispatch"), 0)
+                    new_rank = _STAGE_RANK.get(value, 0)
+                    if new_rank >= cur_rank:
+                        job[key] = value
+                elif key in ("scan", "processing", "artifacts", "tile_upload") and isinstance(value, dict):
                     job[key].update(value)
                 else:
                     job[key] = value
@@ -399,24 +440,268 @@ class JobOrchestrator:
             return False
 
     def _derive_preview_from_dng(self, canonical_path: Path, preview_path: Path):
-        from Agentic_Post_Processing.raw_pipeline.raw_ingest import load_raw_frame
+        """Create a fast display RGB preview for classification/detection only."""
 
-        raw_frame = load_raw_frame(str(canonical_path))
-        # load_raw_frame has already let rawpy subtract black, normalize white,
-        # demosaic, and produce an RGB buffer. Do not call prepare_linear_rgb()
-        # here; that would subtract native black level a second time and can
-        # create the false-color preview seen on stitched multi-tile DNGs.
-        linear_rgb = np.clip(raw_frame.linear_rgb.astype(np.float32), 0.0, 1.0)
+        try:
+            import rawpy  # type: ignore
+        except ImportError as exc:
+            raise RuntimeError("rawpy is required for fast DNG preview rendering") from exc
 
-        luma = 0.2126 * linear_rgb[..., 0] + 0.7152 * linear_rgb[..., 1] + 0.0722 * linear_rgb[..., 2]
-        valid = luma[(luma > 0.002) & (luma < 0.995)]
-        stretch_source = valid if valid.size > 100 else luma.reshape(-1)
-        lo = float(np.percentile(stretch_source, 0.5))
-        hi = float(np.percentile(stretch_source, 99.5))
-        scale = max(hi - lo, 1e-6)
-        preview = np.clip((linear_rgb - lo) / scale, 0.0, 1.0)
+        rgb, color_matrix = self._render_fast_raw_rgb(canonical_path, rawpy)
+        rgb = self._apply_fast_preview_flat_field(canonical_path, rgb, color_matrix, rawpy)
+        if np.isfinite(color_matrix).all() and np.abs(color_matrix).sum() > 1e-6:
+            rgb = np.tensordot(rgb, color_matrix.T, axes=([2], [0])).astype(np.float32)
+        rgb = np.clip(rgb, 0.0, None)
+
+        # The DNGs currently do not carry useful camera WB, and the scanner
+        # light is strongly green. Apply a display-only high-percentile balance
+        # after the DNG color matrix so classifier/detector input has visible
+        # structure. This preview is not used by the physical RAW pipeline.
+        flat = rgb.reshape(-1, 3)
+        luma = 0.2126 * rgb[..., 0] + 0.7152 * rgb[..., 1] + 0.0722 * rgb[..., 2]
+        # Prefer the white backlight area: bright, unsaturated, smooth, and
+        # outside the dark film content. This gives a better preview white
+        # point than using the whole frame when the first tile sees backlight.
+        finite_luma = luma[np.isfinite(luma)]
+        bright_lo, bright_hi = np.percentile(finite_luma, [78.0, 99.3])
+        luma_u8 = np.round(np.clip(luma / max(float(np.percentile(finite_luma, 99.5)), 1e-6), 0, 1) * 255).astype(np.uint8)
+        texture = cv2.absdiff(luma_u8, cv2.blur(luma_u8, (31, 31)))
+        smooth_limit = float(np.percentile(texture, 45.0))
+        backlight_mask = (
+            (luma >= bright_lo)
+            & (luma <= bright_hi)
+            & (texture <= smooth_limit)
+            & np.all(rgb > 1e-5, axis=2)
+        )
+        if int(backlight_mask.sum()) > 512:
+            balance_pixels = rgb[backlight_mask]
+        else:
+            lo_luma, hi_luma = np.percentile(luma, [65.0, 98.0])
+            mask = (luma >= lo_luma) & (luma <= hi_luma) & np.all(rgb > 1e-5, axis=2)
+            balance_pixels = rgb[mask] if int(mask.sum()) > 512 else flat
+        med = np.median(balance_pixels, axis=0).astype(np.float32)
+        target_med = float(np.mean(med))
+        raw_gains = np.clip(target_med / np.clip(med, 1e-6, None), 0.08, 12.0)
+        raw_gains[1] = min(float(raw_gains[1]), 0.65)
+        raw_gains[2] = min(float(raw_gains[2]), 2.0)
+        gains = 1.0 + (raw_gains - 1.0) * 0.70
+        rgb *= gains[np.newaxis, np.newaxis, :]
+
+        finite = rgb[np.isfinite(rgb)]
+        if finite.size == 0:
+            raise RuntimeError(f"Could not render finite preview values from {canonical_path}")
+        lo, hi = np.percentile(finite, [0.3, 99.7])
+        preview = np.clip((rgb - float(lo)) / max(float(hi - lo), 1e-6), 0.0, 1.0)
+        gray = (0.2126 * preview[..., 0] + 0.7152 * preview[..., 1] + 0.0722 * preview[..., 2])[..., None]
+        preview = np.clip(gray + (preview - gray) * 1.18, 0.0, 1.0)
         preview = np.power(preview, 1.0 / 2.2)
+
+        max_side = max(256, int(os.getenv("FAST_PREVIEW_MAX_SIDE", "1600")))
+        h, w = preview.shape[:2]
+        scale = min(1.0, max_side / max(h, w))
+        if scale < 1.0:
+            preview = cv2.resize(
+                preview,
+                (max(1, round(w * scale)), max(1, round(h * scale))),
+                interpolation=cv2.INTER_AREA,
+            )
         self._save_jpeg_preview(preview, preview_path)
+
+    def _derive_flat_corrected_preview_from_dng(self, raw_path: Path, preview_path: Path) -> Path:
+        """Render a classifier preview after full Bayer-domain flat-field correction.
+
+        This is the shared boundary before film classification.  It applies the
+        same RAW flat-field model used by the physical negative pipeline, then
+        demosaics the corrected Bayer frame only for browser/VLM preview.
+        """
+
+        post_dir = _REPO_ROOT / "Post_Processing_Negative"
+        if str(post_dir) not in sys.path:
+            sys.path.insert(0, str(post_dir))
+
+        from negative_physical.flat_field import apply_flat_field, build_flat_model
+        from negative_physical.raw_io import load_raw_bayer
+        from negative_physical.render_preview import demosaic_to_rgb
+
+        backlight_path = calibration_store.matching_tile_dng(calibration_store.BACKLIGHT, raw_path)
+        if backlight_path is None:
+            backlight_path = calibration_store.get_dng_path_if_ready(calibration_store.BACKLIGHT)
+        if backlight_path is None:
+            raise RuntimeError(f"No matching backlight DNG available for {raw_path.name}")
+
+        ff = flat_field_config.load()
+        strength = float(ff.get("strength", 1.0))
+        sigma_frac = float(ff.get("sigma_frac", 0.02))
+        max_side = int(ff.get("max_side", 1024))
+
+        frame = load_raw_bayer(raw_path)
+        map_record = flat_field_maps.load_model_for_tile(raw_path)
+        if map_record is not None:
+            model, map_meta = map_record
+        else:
+            flat = load_raw_bayer(backlight_path)
+            model = build_flat_model(flat, sigma_frac=sigma_frac, max_side=max_side)
+            map_meta = None
+        corrected_bayer = apply_flat_field(frame, model, strength=strength)
+        rgb = demosaic_to_rgb(corrected_bayer, frame.cfa_pattern)
+        rgb = np.clip(rgb, 0.0, None)
+        self._save_balanced_detection_preview(rgb, preview_path)
+
+        preview_path.with_suffix(".flat_field.json").write_text(
+            json.dumps(
+                {
+                    "source": str(raw_path),
+                    "backlight": str(backlight_path),
+                    "strength": strength,
+                    "sigma_frac": sigma_frac,
+                    "max_side": max_side,
+                    "flat_map": map_meta,
+                    "preview_color_matrix": _DETECTION_PREVIEW_MATRIX_E0.tolist(),
+                    "preview_color_mode": _DETECTION_PREVIEW_COLOR_MODE,
+                    "model_diagnostics": model.diagnostics,
+                },
+                indent=2,
+            ),
+            encoding="utf-8",
+        )
+        return preview_path
+
+    @staticmethod
+    def _read_dng_color_matrix(path: Path) -> np.ndarray | None:
+        try:
+            import rawpy  # type: ignore
+
+            with rawpy.imread(str(path)) as raw:
+                matrix = np.asarray(raw.color_matrix[:3, :3], dtype=np.float32)
+            if np.isfinite(matrix).all() and np.abs(matrix).sum() > 1e-6:
+                return matrix
+        except Exception:
+            return None
+        return None
+
+    def _save_balanced_detection_preview(self, rgb: np.ndarray, preview_path: Path) -> None:
+        """Save a display preview from already-corrected linear-ish RGB data."""
+
+        rgb = np.clip(rgb.astype(np.float32), 0.0, None)
+        flat = rgb.reshape(-1, 3)
+        luma = 0.2126 * rgb[..., 0] + 0.7152 * rgb[..., 1] + 0.0722 * rgb[..., 2]
+        finite_luma = luma[np.isfinite(luma)]
+        if finite_luma.size == 0:
+            raise RuntimeError("Could not render finite flat-field corrected preview values")
+        bright_lo, bright_hi = np.percentile(finite_luma, [88.0, 99.6])
+        luma_u8 = np.round(
+            np.clip(luma / max(float(np.percentile(finite_luma, 99.5)), 1e-6), 0, 1) * 255
+        ).astype(np.uint8)
+        texture = cv2.absdiff(luma_u8, cv2.blur(luma_u8, (31, 31)))
+        smooth_limit = float(np.percentile(texture, 45.0))
+        backlight_mask = (
+            (luma >= bright_lo)
+            & (luma <= bright_hi)
+            & (texture <= smooth_limit)
+            & np.all(rgb > 1e-5, axis=2)
+        )
+        if int(backlight_mask.sum()) > 512:
+            balance_pixels = rgb[backlight_mask]
+        else:
+            lo_luma, hi_luma = np.percentile(luma, [65.0, 98.0])
+            mask = (luma >= lo_luma) & (luma <= hi_luma) & np.all(rgb > 1e-5, axis=2)
+            balance_pixels = rgb[mask] if int(mask.sum()) > 512 else flat
+
+        med = np.median(balance_pixels, axis=0).astype(np.float32)
+        target_med = float(np.mean(med))
+        raw_gains = np.clip(target_med / np.clip(med, 1e-6, None), 0.10, 8.0)
+        wb_mix = float(os.getenv("DETECTION_PREVIEW_WB_MIX", "1.00"))
+        gains = 1.0 + (raw_gains - 1.0) * wb_mix
+        rgb *= gains[np.newaxis, np.newaxis, :]
+        rgb = np.tensordot(rgb, _DETECTION_PREVIEW_MATRIX_E0, axes=([2], [0])).astype(np.float32)
+        rgb = np.clip(rgb, 0.0, None)
+
+        finite = rgb[np.isfinite(rgb)]
+        lo, hi = np.percentile(finite, [0.3, 99.7])
+        preview = np.clip((rgb - float(lo)) / max(float(hi - lo), 1e-6), 0.0, 1.0)
+        gray = (0.2126 * preview[..., 0] + 0.7152 * preview[..., 1] + 0.0722 * preview[..., 2])[..., None]
+        saturation = float(os.getenv("DETECTION_PREVIEW_SATURATION", "1.10"))
+        preview = np.clip(gray + (preview - gray) * saturation, 0.0, 1.0)
+        preview = np.power(preview, 1.0 / 2.2)
+
+        max_side = max(256, int(os.getenv("FAST_PREVIEW_MAX_SIDE", "1600")))
+        h, w = preview.shape[:2]
+        scale = min(1.0, max_side / max(h, w))
+        if scale < 1.0:
+            preview = cv2.resize(
+                preview,
+                (max(1, round(w * scale)), max(1, round(h * scale))),
+                interpolation=cv2.INTER_AREA,
+            )
+        self._save_jpeg_preview(preview, preview_path)
+
+    @staticmethod
+    def _render_fast_raw_rgb(path: Path, rawpy_module) -> tuple[np.ndarray, np.ndarray]:
+        with rawpy_module.imread(str(path)) as raw:
+            rgb16 = raw.postprocess(
+                use_camera_wb=False,
+                no_auto_bright=True,
+                output_bps=16,
+                gamma=(1, 1),
+                half_size=True,
+                output_color=rawpy_module.ColorSpace.raw,
+            )
+            color_matrix = np.asarray(raw.color_matrix[:3, :3], dtype=np.float32)
+        return rgb16.astype(np.float32) / 65535.0, color_matrix
+
+    def _apply_fast_preview_flat_field(
+        self,
+        frame_path: Path,
+        rgb_raw: np.ndarray,
+        color_matrix: np.ndarray,
+        rawpy_module,
+    ) -> np.ndarray:
+        if os.getenv("FAST_PREVIEW_FLAT_FIELD", "0").strip().lower() in {"0", "false", "off"}:
+            return rgb_raw
+        backlight_path = calibration_store.matching_tile_dng(calibration_store.BACKLIGHT, frame_path)
+        if backlight_path is None:
+            backlight_path = calibration_store.get_dng_path_if_ready(calibration_store.BACKLIGHT)
+        if backlight_path is None or not backlight_path.exists():
+            return rgb_raw
+        try:
+            flat_raw, flat_matrix = self._render_fast_raw_rgb(backlight_path, rawpy_module)
+            if flat_raw.shape[:2] != rgb_raw.shape[:2]:
+                flat_raw = cv2.resize(
+                    flat_raw,
+                    (rgb_raw.shape[1], rgb_raw.shape[0]),
+                    interpolation=cv2.INTER_AREA,
+                )
+            matrix = color_matrix if np.abs(color_matrix).sum() > 1e-6 else flat_matrix
+            if np.isfinite(matrix).all() and np.abs(matrix).sum() > 1e-6:
+                flat_rgb = np.tensordot(flat_raw, matrix.T, axes=([2], [0])).astype(np.float32)
+            else:
+                flat_rgb = flat_raw.astype(np.float32)
+            flat_rgb = np.clip(flat_rgb, 1e-6, None)
+            ff = flat_field_config.load()
+            strength = float(ff.get("strength", 1.0))
+            max_side = max(64, int(ff.get("max_side", 1024)))
+            sigma_frac = max(0.001, float(ff.get("sigma_frac", 0.02)))
+            h, w = flat_rgb.shape[:2]
+            scale = min(1.0, max_side / max(h, w))
+            if scale < 1.0:
+                small = cv2.resize(
+                    flat_rgb,
+                    (max(1, round(w * scale)), max(1, round(h * scale))),
+                    interpolation=cv2.INTER_AREA,
+                )
+            else:
+                small = flat_rgb
+            sigma = max(1.0, sigma_frac * max(small.shape[:2]))
+            low = cv2.GaussianBlur(small, (0, 0), sigmaX=sigma, sigmaY=sigma)
+            if low.shape[:2] != (h, w):
+                low = cv2.resize(low, (w, h), interpolation=cv2.INTER_LINEAR)
+            mean = np.clip(low.reshape(-1, 3).mean(axis=0), 1e-6, None)
+            illum = np.clip(low / mean[np.newaxis, np.newaxis, :], 1e-6, None)
+            if abs(strength - 1.0) > 1e-6:
+                illum = np.power(illum, strength).astype(np.float32)
+            return (rgb_raw / illum).astype(np.float32)
+        except Exception:
+            return rgb_raw
 
     def _ensure_processing_inputs(self, job_id: str) -> tuple[Path | None, Path]:
         job_dir = self._job_dir(job_id)
@@ -489,10 +774,35 @@ class JobOrchestrator:
         return items
 
     def _ensure_tile_preview(self, raw_path: Path, preview_path: Path | None, output_path: Path) -> Path:
-        if preview_path is not None and preview_path.exists():
-            return preview_path
-        self._derive_preview_from_dng(raw_path, output_path)
-        return output_path
+        # Pi-side JPEGs can be green sensor previews. Classification and bbox
+        # detection should use a PC-rendered preview after RAW flat-field
+        # correction, so routing sees the same corrected boundary as later
+        # processing branches.
+        del preview_path
+        target = raw_path.with_name(f"{raw_path.stem}_flat_corrected_preview.jpg") if raw_path.parent.name == "tiles" else output_path
+        backlight_path = calibration_store.matching_tile_dng(calibration_store.BACKLIGHT, raw_path)
+        if backlight_path is None:
+            backlight_path = calibration_store.get_dng_path_if_ready(calibration_store.BACKLIGHT)
+        if target.exists() and target.stat().st_mtime >= raw_path.stat().st_mtime:
+            metadata_path = target.with_suffix(".flat_field.json")
+            color_mode_ok = False
+            if metadata_path.exists():
+                try:
+                    preview_meta = json.loads(metadata_path.read_text(encoding="utf-8"))
+                    color_mode_ok = (
+                        preview_meta.get("preview_color_mode") == _DETECTION_PREVIEW_COLOR_MODE
+                        and preview_meta.get("preview_color_matrix") == _DETECTION_PREVIEW_MATRIX_E0.tolist()
+                    )
+                except Exception:
+                    color_mode_ok = False
+            if color_mode_ok and (backlight_path is None or target.stat().st_mtime >= backlight_path.stat().st_mtime):
+                return target
+        try:
+            self._derive_flat_corrected_preview_from_dng(raw_path, target)
+        except Exception:
+            logger.exception("Flat-field corrected preview failed for %s; falling back to fast DNG preview", raw_path)
+            self._derive_preview_from_dng(raw_path, target)
+        return target
 
     def _maybe_start_streaming_tile_processing(self, job_id: str) -> None:
         with self._lock:
@@ -542,9 +852,19 @@ class JobOrchestrator:
             raise RuntimeError("Tile bootstrap requires the first three uploaded tiles")
 
         classifier_results = []
+        bootstrap_items = []
         bbox_results = []
         accepted_base_bboxes = []
-        threshold = float(os.getenv("BASE_BBOX_CONFIDENCE_THRESHOLD", "0.35"))
+        threshold = float(os.getenv("BASE_BBOX_CONFIDENCE_THRESHOLD", "0.25"))
+        max_base_area_fraction = float(os.getenv("BASE_BBOX_MAX_AREA_FRACTION", "0.45"))
+
+        def _bbox_area_fraction(bbox: list | tuple | None, width: int = 4056, height: int = 3040) -> float | None:
+            if not bbox or len(bbox) != 4:
+                return None
+            x0, y0, x1, y1 = [float(v) for v in bbox]
+            area = max(0.0, x1 - x0) * max(0.0, y1 - y0)
+            return area / float(width * height)
+
         for row, col in arrival:
             raw_path = job_dir / "tiles" / f"row_{row}_col_{col}.dng"
             preview_path = job_dir / "tiles" / f"row_{row}_col_{col}.jpg"
@@ -556,13 +876,94 @@ class JobOrchestrator:
                 bootstrap_dir / f"row_{row}_col_{col}_preview.jpg",
             )
             classifier_results.append(adapter._classify(usable_preview))
+            bootstrap_items.append(
+                {
+                    "row": row,
+                    "col": col,
+                    "raw_path": raw_path,
+                    "preview_path": usable_preview,
+                }
+            )
+
+        classifier_result = self._vote_classifier(classifier_results, classifier_cls)
+        valid_classifications = [item.classification for item in classifier_results if item.classification]
+        vote_counts = Counter(valid_classifications)
+        classifier_vote_count = int(vote_counts.get(classifier_result.classification, 0)) if classifier_result.classification else 0
+        classifier_vote_total = len(valid_classifications)
+        classifier_confidence = (
+            float(classifier_vote_count / classifier_vote_total)
+            if classifier_vote_total
+            else None
+        )
+
+        self._up(
+            job_id,
+            stage="classify",
+            progress_pct=78,
+            artifacts={"metadata_url": f"/api/jobs/{job_id}/artifacts/metadata"},
+            processing={
+                "classification": classifier_result.classification,
+                "classifier_raw_label": classifier_result.raw_label,
+                "classifier_mode": classifier_result.mode,
+                "classifier_confidence": getattr(classifier_result, "confidence", None),
+            },
+        )
+        classification_metadata = {
+            "mode": "first_three_tile_bootstrap",
+            "arrival_order": [{"row": r, "col": c} for r, c in arrival],
+            "classification": classifier_result.classification,
+            "classifier_raw_label": classifier_result.raw_label,
+            "classifier_mode": classifier_result.mode,
+            "classifier_confidence": getattr(classifier_result, "confidence", None),
+            "classification_confidence": classifier_confidence,
+            "classification_vote_count": classifier_vote_count,
+            "classification_vote_total": classifier_vote_total,
+            "base_confidence_threshold": threshold,
+            "base_max_area_fraction": max_base_area_fraction,
+            "accepted_base_bbox_count": 0,
+            "base_bbox": None,
+            "bbox_results": [],
+            "reference_layout_path": None,
+        }
+        (job_dir / "metadata.json").write_text(
+            json.dumps(
+                {
+                    "processing_mode": "streaming_classification_complete",
+                    "bootstrap": classification_metadata,
+                    "tiles": [],
+                    "final_output_path": None,
+                },
+                indent=2,
+            ),
+            encoding="utf-8",
+        )
+
+        reference_layout_path: Path | None = None
+        if classifier_result.classification == "negative_film":
+            self._up(job_id, stage="classify", progress_pct=79)
+
+        for item in bootstrap_items if classifier_result.classification == "negative_film" else []:
+            row = int(item["row"])
+            col = int(item["col"])
+            raw_path = Path(item["raw_path"])
+            usable_preview = Path(item["preview_path"])
             bbox_dir = bootstrap_dir / f"row_{row}_col_{col}"
             bbox_dir.mkdir(parents=True, exist_ok=True)
             bbox = detect_preview_bboxes(usable_preview, bbox_dir)
-            bbox_results.append({"row": row, "col": col, "bbox_detection": bbox})
-            base_bbox = (bbox or {}).get("base_candidate_bbox")
-            confidence = float((bbox or {}).get("confidence") or 0.0)
-            if base_bbox and confidence >= threshold:
+            bbox_payload = dict(bbox or {})
+            base_bbox = bbox_payload.get("base_candidate_bbox")
+            confidence = float(bbox_payload.get("confidence") or 0.0)
+            area_fraction = _bbox_area_fraction(base_bbox)
+            bbox_payload["base_area_fraction"] = area_fraction
+            accepted = False
+            reason = None
+            if not base_bbox:
+                reason = "missing_base_candidate_bbox"
+            elif confidence < threshold:
+                reason = "confidence_below_threshold"
+            elif area_fraction is not None and area_fraction > max_base_area_fraction:
+                reason = "base_bbox_too_large"
+            else:
                 mapped = map_preview_bbox_to_raw(
                     base_bbox,
                     preview_source=usable_preview,
@@ -570,53 +971,78 @@ class JobOrchestrator:
                 )
                 if mapped:
                     accepted_base_bboxes.append([float(v) for v in mapped])
+                    bbox_payload["base_candidate_bbox_raw"] = [int(v) for v in mapped]
+                    accepted = True
+                else:
+                    reason = "base_bbox_mapping_failed"
+            bbox_payload["base_acceptance"] = {
+                "accepted": accepted,
+                "reason": reason,
+                "confidence_threshold": threshold,
+                "max_area_fraction": max_base_area_fraction,
+            }
+            bbox_results.append({"row": row, "col": col, "bbox_detection": bbox_payload})
 
-        classifier_result = self._vote_classifier(classifier_results, classifier_cls)
-        if not accepted_base_bboxes:
+        if classifier_result.classification == "negative_film" and not accepted_base_bboxes:
             raise RuntimeError(
                 "Could not bootstrap base reference: first three tiles produced no "
-                f"base_candidate_bbox above confidence {threshold}"
+                f"base_candidate_bbox above confidence {threshold} and below area fraction {max_base_area_fraction}"
             )
-        averaged = np.asarray(accepted_base_bboxes, dtype=np.float32).mean(axis=0)
-        base_bbox = [int(round(v)) for v in averaged.tolist()]
-        # Preserve Bayer phase for downstream RAW crops.
-        base_bbox[0] -= base_bbox[0] % 2
-        base_bbox[1] -= base_bbox[1] % 2
-        base_bbox[2] -= base_bbox[2] % 2
-        base_bbox[3] -= base_bbox[3] % 2
-
-        reference_layout_path = job_dir / "reference_layout_streaming.json"
-        reference_layout_path.write_text(
-            json.dumps({"base": {"bbox": base_bbox}}, indent=2),
-            encoding="utf-8",
-        )
         metadata = {
             "mode": "first_three_tile_bootstrap",
             "arrival_order": [{"row": r, "col": c} for r, c in arrival],
             "classification": classifier_result.classification,
             "classifier_raw_label": classifier_result.raw_label,
             "classifier_mode": classifier_result.mode,
+            "classifier_confidence": getattr(classifier_result, "confidence", None),
+            "classification_confidence": classifier_confidence,
+            "classification_vote_count": classifier_vote_count,
+            "classification_vote_total": classifier_vote_total,
             "base_confidence_threshold": threshold,
+            "base_max_area_fraction": max_base_area_fraction,
             "accepted_base_bbox_count": len(accepted_base_bboxes),
-            "base_bbox": base_bbox,
+            "base_bbox": None,
+            "base_reference_mode": (
+                "global_base_rgb_from_first_three_bbox_pixels"
+                if classifier_result.classification == "negative_film"
+                else "not_required_for_non_negative"
+            ),
             "bbox_results": bbox_results,
-            "reference_layout_path": str(reference_layout_path),
+            "reference_layout_path": None,
         }
         (job_dir / "tile_bootstrap.json").write_text(json.dumps(metadata, indent=2), encoding="utf-8")
+        (job_dir / "metadata.json").write_text(
+            json.dumps(
+                {
+                    "processing_mode": "streaming_bootstrap_pending",
+                    "bootstrap": metadata,
+                    "tiles": [],
+                    "final_output_path": None,
+                },
+                indent=2,
+            ),
+            encoding="utf-8",
+        )
         self._up(
             job_id,
             stage="classify",
             progress_pct=79,
+            artifacts={"metadata_url": f"/api/jobs/{job_id}/artifacts/metadata"},
             processing={
                 "classification": classifier_result.classification,
                 "classifier_raw_label": classifier_result.raw_label,
                 "classifier_mode": classifier_result.mode,
+                "classifier_confidence": getattr(classifier_result, "confidence", None),
             },
         )
         return {
             "classifier_result": classifier_result,
             "reference_layout_path": reference_layout_path,
             "bootstrap_metadata": metadata,
+            "bootstrap_preview_map": {
+                (int(item["row"]), int(item["col"])): str(item["preview_path"])
+                for item in bootstrap_items
+            },
         }
 
     def _vote_classifier(self, results: list, classifier_cls):
@@ -633,6 +1059,7 @@ class JobOrchestrator:
             first.raw_label,
             f"first_three_vote:{','.join(item.mode for item in results)}",
             first.error,
+            getattr(first, "confidence", None),
         )
 
     def _tile_processing_job(
@@ -644,16 +1071,31 @@ class JobOrchestrator:
         preview_path: Path | None,
         adapter,
         classifier_result,
-        reference_layout_path: Path,
+        reference_layout_path: Path | None,
+        global_params_path: Path | None = None,
+        bootstrap_preview_map: dict[tuple[int, int], str] | None = None,
     ) -> dict:
         job_dir = self._job_dir(job_id)
         tile_dir = job_dir / "processed_tiles" / raw_path.stem
         tile_dir.mkdir(parents=True, exist_ok=True)
-        usable_preview = self._ensure_tile_preview(
-            raw_path,
-            preview_path if preview_path and preview_path.exists() else None,
-            tile_dir / f"{raw_path.stem}_preview.jpg",
-        )
+        usable_preview: Path
+        bootstrap_preview = (bootstrap_preview_map or {}).get((row, col))
+        if bootstrap_preview:
+            usable_preview = Path(bootstrap_preview)
+        elif global_params_path is not None or classifier_result.classification == "positive_film":
+            # Downstream RAW branches receive classifier_result/global params
+            # from the first-three bootstrap and do not inspect preview pixels.
+            # Keep a tiny placeholder to satisfy the adapter's path contract
+            # without generating expensive E0 previews for every tile.
+            usable_preview = tile_dir / f"{raw_path.stem}_processing_placeholder.jpg"
+            if not usable_preview.exists():
+                self._save_processing_placeholder_preview(usable_preview)
+        else:
+            usable_preview = self._ensure_tile_preview(
+                raw_path,
+                preview_path if preview_path and preview_path.exists() else None,
+                tile_dir / f"{raw_path.stem}_preview.jpg",
+            )
         if not (job_dir / "raw_preview.jpg").exists():
             shutil.copy2(usable_preview, job_dir / "raw_preview.jpg")
             self._set_raw_preview(job_id)
@@ -671,6 +1113,7 @@ class JobOrchestrator:
                 "confidence": None,
             },
             reference_layout_path=reference_layout_path,
+            global_params_path=global_params_path,
             progress_cb=None,
         )
         result.update({"row": row, "col": col, "raw_tile_path": str(raw_path)})
@@ -702,6 +1145,16 @@ class JobOrchestrator:
             )
             classifier_result = context["classifier_result"]
             reference_layout_path = context["reference_layout_path"]
+            global_params_path = self._build_global_negative_params_from_bootstrap(
+                job_id,
+                context["bootstrap_metadata"],
+            )
+            global_params = None
+            if global_params_path and global_params_path.exists():
+                try:
+                    global_params = json.loads(global_params_path.read_text(encoding="utf-8"))
+                except Exception:
+                    global_params = None
             self._up(job_id, stage="process", progress_pct=80)
             with ThreadPoolExecutor(max_workers=max_workers) as pool:
                 while True:
@@ -726,6 +1179,8 @@ class JobOrchestrator:
                             ProcessingAdapter(),
                             classifier_result,
                             reference_layout_path,
+                            global_params_path,
+                            context.get("bootstrap_preview_map"),
                         )
                     done = set()
                     if futures:
@@ -767,6 +1222,9 @@ class JobOrchestrator:
                 "processing_mode": "streaming_first_three_bootstrap_per_tile_raw",
                 "tile_count": len(tile_results),
                 "bootstrap": context["bootstrap_metadata"],
+                "global_negative_params_path": str(global_params_path) if global_params_path else None,
+                "global_negative_params_url": f"/job-files/{job_id}/global_negative_params.json" if global_params_path else None,
+                "global_negative_params": global_params,
                 "tiles": tile_results,
                 "final_output_path": str(final_path) if final_path else None,
             }
@@ -797,7 +1255,164 @@ class JobOrchestrator:
         finally:
             event.set()
 
+    def _save_processing_placeholder_preview(self, preview_path: Path) -> None:
+        preview_path.parent.mkdir(parents=True, exist_ok=True)
+        image = np.zeros((16, 16, 3), dtype=np.uint8)
+        image[:, :] = (32, 32, 32)
+        ok = cv2.imwrite(
+            str(preview_path),
+            cv2.cvtColor(image, cv2.COLOR_RGB2BGR),
+            [int(cv2.IMWRITE_JPEG_QUALITY), 50],
+        )
+        if not ok:
+            raise RuntimeError(f"Failed to write processing placeholder preview: {preview_path}")
+
+    def _build_global_negative_params_from_bootstrap(
+        self,
+        job_id: str,
+        bootstrap_metadata: dict,
+    ) -> Path | None:
+        """Build the negative branch global base reference from first-three detection only.
+
+        This must not run the negative processing pipeline.  The first three
+        tiles are used only for RGB preview classification and base ROI
+        detection; every tile, including the first three, is processed exactly
+        once later by _tile_processing_job().
+        """
+
+        if bootstrap_metadata.get("classification") != "negative_film":
+            return None
+
+        post_dir = _REPO_ROOT / "Post_Processing_Negative"
+        if str(post_dir) not in sys.path:
+            sys.path.insert(0, str(post_dir))
+
+        from negative_physical.flat_field import apply_flat_field, build_flat_model
+        from negative_physical.negative_inversion import (
+            base_reference_to_dict,
+            estimate_base_reference,
+        )
+        from negative_physical.raw_io import load_raw_bayer
+        from negative_physical.render_preview import demosaic_to_rgb
+
+        job_dir = self._job_dir(job_id)
+        refs: list[dict] = []
+        errors: list[str] = []
+        for result in bootstrap_metadata.get("bbox_results") or []:
+            row = int(result.get("row", 0))
+            col = int(result.get("col", 0))
+            detection = result.get("bbox_detection") or {}
+            acceptance = detection.get("base_acceptance") or {}
+            raw_bbox = detection.get("base_candidate_bbox_raw")
+            if not acceptance.get("accepted") or not raw_bbox:
+                continue
+
+            raw_path = job_dir / "tiles" / f"row_{row}_col_{col}.dng"
+            backlight_path = calibration_store.matching_tile_dng(calibration_store.BACKLIGHT, raw_path)
+            if backlight_path is None:
+                backlight_path = calibration_store.get_dng_path_if_ready(calibration_store.BACKLIGHT)
+            if backlight_path is None:
+                errors.append(f"row_{row}_col_{col}: missing matching backlight tile")
+                continue
+
+            try:
+                frame = load_raw_bayer(raw_path)
+                map_record = flat_field_maps.load_model_for_tile(raw_path)
+                if map_record is not None:
+                    flat_model, _map_meta = map_record
+                else:
+                    ff = flat_field_config.load()
+                    flat = load_raw_bayer(backlight_path)
+                    flat_model = build_flat_model(
+                        flat,
+                        sigma_frac=float(ff.get("sigma_frac", 0.02)),
+                        max_side=int(ff.get("max_side", 1024)),
+                    )
+                corrected = apply_flat_field(frame, flat_model, strength=1.0)
+                rgb_linear = demosaic_to_rgb(corrected, frame.cfa_pattern)
+                ref = estimate_base_reference(
+                    rgb_linear,
+                    [{"name": "base", "bbox": [int(v) for v in raw_bbox]}],
+                    source_frame=str(raw_path),
+                    roi_name="base",
+                )
+                refs.append(base_reference_to_dict(ref))
+            except Exception as exc:
+                errors.append(f"row_{row}_col_{col}: {exc}")
+
+        if not refs:
+            detail = "; ".join(errors) if errors else "no accepted bootstrap base references"
+            raise RuntimeError(f"Could not build global base reference from first three tiles: {detail}")
+
+        def _avg_vec(values: list[list[float]]) -> list[float]:
+            arr = np.asarray(values, dtype=np.float32)
+            return [float(v) for v in arr.mean(axis=0)]
+
+        base_rgb = _avg_vec([ref["base_rgb"] for ref in refs])
+        sample_count = int(sum(int(ref.get("sample_count") or 0) for ref in refs))
+        stats = {
+            "global_average_count": len(refs),
+            "source": "first_three_tile_bbox_pixel_average",
+            "bootstrap_errors": errors,
+            "per_tile_base_rgb": [ref["base_rgb"] for ref in refs],
+            "per_tile_sample_bbox": [ref.get("bbox") for ref in refs],
+        }
+        base_reference = {
+            "base_rgb": base_rgb,
+            "roi_name": "base",
+            "sample_count": sample_count,
+            "source_frame": f"job:{job_id}:first_three_bbox_pixel_average",
+            "stats": stats,
+        }
+        payload = {
+            "mode": "first_three_tile_global_base_reference",
+            "job_id": job_id,
+            "bootstrap_tile_count": len(refs),
+            "base_reference": base_reference,
+            "negative_stats": {},
+            "stage3": {},
+            "stage4": {},
+        }
+        path = job_dir / "global_negative_params.json"
+        path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+
+        bootstrap_metadata["global_negative_params_path"] = str(path)
+        bootstrap_metadata["global_negative_params_url"] = f"/job-files/{job_id}/global_negative_params.json"
+        bootstrap_metadata["global_base_reference"] = base_reference
+        (job_dir / "tile_bootstrap.json").write_text(
+            json.dumps(bootstrap_metadata, indent=2),
+            encoding="utf-8",
+        )
+        (job_dir / "metadata.json").write_text(
+            json.dumps(
+                {
+                    "processing_mode": "streaming_bootstrap_complete",
+                    "bootstrap": bootstrap_metadata,
+                    "global_negative_params_path": str(path),
+                    "global_negative_params_url": f"/job-files/{job_id}/global_negative_params.json",
+                    "global_negative_params": payload,
+                    "tiles": [],
+                    "final_output_path": None,
+                },
+                indent=2,
+            ),
+            encoding="utf-8",
+        )
+        self._up(
+            job_id,
+            stage="classify",
+            progress_pct=80,
+            artifacts={
+                "metadata_url": f"/api/jobs/{job_id}/artifacts/metadata",
+            },
+        )
+        return path
+
     _STITCH_MAX_PX = 4096  # longest axis target for the integrated output
+    _REFINE_MAX_SHIFT_PX = 8
+    _REFINE_STEP_PX = 2
+    _REFINE_MIN_OVERLAP_PX = 80
+    _REFINE_MIN_IMPROVEMENT = 0.08
 
     def _stitch_processed_tiles(
         self,
@@ -857,12 +1472,16 @@ class JobOrchestrator:
         canvas = np.zeros((len(rows) * tile_h, len(cols) * tile_w, 3), dtype=np.uint8)
         row_index = {row: idx for idx, row in enumerate(rows)}
         col_index = {col: idx for idx, col in enumerate(cols)}
+        num_cols = len(cols)
         placements = []
         for item in images:
             row, col, img = item["row"], item["col"], item["image"]
             small = cv2.resize(img, (tile_w, tile_h), interpolation=cv2.INTER_AREA)
             y = row_index[row] * tile_h
-            x = col_index[col] * tile_w
+            # Serpentine scan: even 0-indexed rows captured right-to-left.
+            # Map scan-order col to physical col so the canvas is spatially correct.
+            phys_col_idx = (num_cols - 1 - col_index[col]) if row % 2 == 0 else col_index[col]
+            x = phys_col_idx * tile_w
             canvas[y : y + small.shape[0], x : x + small.shape[1]] = small
             placements.append({"row": row, "col": col, "x": x, "y": y, "w": small.shape[1], "h": small.shape[0]})
 
@@ -942,6 +1561,7 @@ class JobOrchestrator:
                 }
             )
 
+        placements, refinement_report = self._refine_aligned_placements(placements, rows, cols)
         canvas_w = max(p["x"] + p["w"] for p in placements)
         canvas_h = max(p["y"] + p["h"] for p in placements)
         accum = np.zeros((canvas_h, canvas_w, 3), dtype=np.float32)
@@ -979,6 +1599,7 @@ class JobOrchestrator:
                 "scale": scale,
                 "crop": {"left": crop[0], "top": crop[1], "right": crop[2], "bottom": crop[3]},
                 "measurement_count": len(measurements),
+                "overlap_refinement": refinement_report,
                 "placements": [
                     {key: value for key, value in p.items() if key != "image"}
                     for p in placements
@@ -986,6 +1607,174 @@ class JobOrchestrator:
             },
         )
         return out_jpg
+
+    def _refine_aligned_placements(
+        self,
+        placements: list[dict],
+        rows: int,
+        cols: int,
+    ) -> tuple[list[dict], dict]:
+        if os.getenv("PROCESSED_TILE_OVERLAP_REFINEMENT", "1").strip().lower() in {"0", "false", "off"}:
+            return placements, {"enabled": False, "reason": "disabled_by_env"}
+        radius = max(0, int(os.getenv("PROCESSED_TILE_REFINE_RADIUS_PX", str(self._REFINE_MAX_SHIFT_PX))))
+        step = max(1, int(os.getenv("PROCESSED_TILE_REFINE_STEP_PX", str(self._REFINE_STEP_PX))))
+        min_overlap = max(1, int(os.getenv("PROCESSED_TILE_REFINE_MIN_OVERLAP_PX", str(self._REFINE_MIN_OVERLAP_PX))))
+        min_improvement = max(0.0, float(os.getenv("PROCESSED_TILE_REFINE_MIN_IMPROVEMENT", str(self._REFINE_MIN_IMPROVEMENT))))
+        if radius <= 0:
+            return placements, {"enabled": False, "reason": "radius_is_zero"}
+
+        by_phys = {(p["physical_row"], p["physical_col"]): p for p in placements}
+        pair_reports = []
+        edge_offsets: dict[tuple[tuple[int, int], tuple[int, int]], tuple[int, int]] = {}
+        for row in range(rows):
+            for col in range(cols):
+                src_key = (row, col)
+                src = by_phys.get(src_key)
+                if src is None:
+                    continue
+                for dst_key, axis in (((row, col + 1), "x"), ((row + 1, col), "y")):
+                    dst = by_phys.get(dst_key)
+                    if dst is None:
+                        continue
+                    result = self._best_overlap_shift(src, dst, radius, step, min_overlap)
+                    if result is None:
+                        shift_x = shift_y = 0
+                        applied = False
+                        reason = "insufficient_overlap_or_texture"
+                        baseline = best = None
+                    else:
+                        shift_x, shift_y, baseline, best = result
+                        improvement = 0.0 if baseline <= 0 else (baseline - best) / baseline
+                        applied = improvement >= min_improvement
+                        reason = "applied" if applied else "below_improvement_threshold"
+                        if not applied:
+                            shift_x = shift_y = 0
+                    edge_offsets[(src_key, dst_key)] = (
+                        int(dst["x"] - src["x"] + shift_x),
+                        int(dst["y"] - src["y"] + shift_y),
+                    )
+                    pair_reports.append(
+                        {
+                            "axis": axis,
+                            "src": {"row": src_key[0], "col": src_key[1]},
+                            "dst": {"row": dst_key[0], "col": dst_key[1]},
+                            "shift_x": int(shift_x),
+                            "shift_y": int(shift_y),
+                            "baseline_score": baseline,
+                            "best_score": best,
+                            "applied": applied,
+                            "reason": reason,
+                        }
+                    )
+
+        refined_positions = self._manual_abs_positions(edge_offsets, rows, cols)
+        if refined_positions is None:
+            return placements, {
+                "enabled": True,
+                "applied": False,
+                "reason": "refined_graph_incomplete",
+                "radius_px": radius,
+                "step_px": step,
+                "pairs": pair_reports,
+            }
+
+        min_x = min(x for x, _ in refined_positions.values())
+        min_y = min(y for _, y in refined_positions.values())
+        refined = []
+        for p in placements:
+            key = (p["physical_row"], p["physical_col"])
+            if key not in refined_positions:
+                refined.append(p)
+                continue
+            x, y = refined_positions[key]
+            item = dict(p)
+            item["manual_x"] = int(p["x"])
+            item["manual_y"] = int(p["y"])
+            proposed_x = int(x - min_x)
+            proposed_y = int(y - min_y)
+            # Keep refinement conservative: pair corrections may accumulate
+            # through the graph, but per-tile deviation from manual placement
+            # must remain within the configured local search radius.
+            item["x"] = int(item["manual_x"] + max(-radius, min(radius, proposed_x - item["manual_x"])))
+            item["y"] = int(item["manual_y"] + max(-radius, min(radius, proposed_y - item["manual_y"])))
+            item["refine_dx"] = int(item["x"] - item["manual_x"])
+            item["refine_dy"] = int(item["y"] - item["manual_y"])
+            refined.append(item)
+
+        return refined, {
+            "enabled": True,
+            "applied": any(pair.get("applied") for pair in pair_reports),
+            "radius_px": radius,
+            "step_px": step,
+            "min_overlap_px": min_overlap,
+            "min_improvement": min_improvement,
+            "pairs": pair_reports,
+        }
+
+    def _best_overlap_shift(
+        self,
+        src: dict,
+        dst: dict,
+        radius: int,
+        step: int,
+        min_overlap: int,
+    ) -> tuple[int, int, float, float] | None:
+        baseline = self._overlap_score_at_shift(src, dst, 0, 0, min_overlap)
+        if baseline is None:
+            return None
+        best_score = baseline
+        best_shift = (0, 0)
+        for dy in range(-radius, radius + 1, step):
+            for dx in range(-radius, radius + 1, step):
+                if dx == 0 and dy == 0:
+                    continue
+                score = self._overlap_score_at_shift(src, dst, dx, dy, min_overlap)
+                if score is not None and score < best_score:
+                    best_score = score
+                    best_shift = (dx, dy)
+        return best_shift[0], best_shift[1], float(baseline), float(best_score)
+
+    def _overlap_score_at_shift(
+        self,
+        src: dict,
+        dst: dict,
+        shift_x: int,
+        shift_y: int,
+        min_overlap: int,
+    ) -> float | None:
+        ax0, ay0 = int(src["x"]), int(src["y"])
+        bx0, by0 = int(dst["x"] + shift_x), int(dst["y"] + shift_y)
+        ax1, ay1 = ax0 + int(src["w"]), ay0 + int(src["h"])
+        bx1, by1 = bx0 + int(dst["w"]), by0 + int(dst["h"])
+        x0, y0 = max(ax0, bx0), max(ay0, by0)
+        x1, y1 = min(ax1, bx1), min(ay1, by1)
+        if x1 - x0 < min_overlap or y1 - y0 < min_overlap:
+            return None
+        a = src["image"][y0 - ay0 : y1 - ay0, x0 - ax0 : x1 - ax0]
+        b = dst["image"][y0 - by0 : y1 - by0, x0 - bx0 : x1 - bx0]
+        return self._normalized_gradient_difference(a, b)
+
+    @staticmethod
+    def _normalized_gradient_difference(a: np.ndarray, b: np.ndarray) -> float | None:
+        if a.size == 0 or b.size == 0 or a.shape[:2] != b.shape[:2]:
+            return None
+        max_dim = max(a.shape[0], a.shape[1])
+        if max_dim > 320:
+            scale = 320.0 / max_dim
+            size = (max(1, round(a.shape[1] * scale)), max(1, round(a.shape[0] * scale)))
+            a = cv2.resize(a, size, interpolation=cv2.INTER_AREA)
+            b = cv2.resize(b, size, interpolation=cv2.INTER_AREA)
+        ga = cv2.cvtColor(a, cv2.COLOR_BGR2GRAY).astype(np.float32)
+        gb = cv2.cvtColor(b, cv2.COLOR_BGR2GRAY).astype(np.float32)
+        ea = cv2.Sobel(ga, cv2.CV_32F, 1, 0, ksize=3) + cv2.Sobel(ga, cv2.CV_32F, 0, 1, ksize=3)
+        eb = cv2.Sobel(gb, cv2.CV_32F, 1, 0, ksize=3) + cv2.Sobel(gb, cv2.CV_32F, 0, 1, ksize=3)
+        std_a = float(ea.std())
+        std_b = float(eb.std())
+        if std_a < 1e-3 or std_b < 1e-3:
+            return None
+        ea = (ea - float(ea.mean())) / std_a
+        eb = (eb - float(eb.mean())) / std_b
+        return float(np.mean(np.abs(ea - eb)))
 
     def _load_pi_alignment_for_mosaic(self) -> dict | None:
         if not _HAS_REQUESTS:
@@ -1326,71 +2115,82 @@ class JobOrchestrator:
         tile_inputs: list[tuple[int, int, Path, Path | None]],
         adapter,
     ) -> None:
+        from processing_adapter import (
+            _ClassifierResult,
+            _detect_preview_bboxes,
+            _map_preview_bbox_to_raw,
+        )
+
         job_dir = self._job_dir(job_id)
         processed_dir = job_dir / "processed_tiles"
         tile_results: list[dict] = []
         total = len(tile_inputs)
         self._up(job_id, stage="classify", progress_pct=78)
 
+        with self._lock:
+            job = self._jobs.get(job_id)
+            if job is not None and len(job.get("_tile_arrival_order", [])) < 3:
+                job["_tile_arrival_order"] = [(int(row), int(col)) for row, col, _raw, _preview in tile_inputs[:3]]
+
+        context = self._bootstrap_tile_context(
+            job_id,
+            adapter,
+            _detect_preview_bboxes,
+            _map_preview_bbox_to_raw,
+            _ClassifierResult,
+        )
+        classifier_result = context["classifier_result"]
+        reference_layout_path = context["reference_layout_path"]
+        global_params_path = self._build_global_negative_params_from_bootstrap(
+            job_id,
+            context["bootstrap_metadata"],
+        )
+        global_params = None
+        if global_params_path and global_params_path.exists():
+            try:
+                global_params = json.loads(global_params_path.read_text(encoding="utf-8"))
+            except Exception:
+                global_params = None
+
         for index, (row, col, raw_path, preview_path) in enumerate(tile_inputs, start=1):
             if self._cancelled(job_id):
                 self._up(job_id, state="cancelled", stage="cancelled", progress_pct=0)
                 return
-            tile_dir = processed_dir / raw_path.stem
-            tile_dir.mkdir(parents=True, exist_ok=True)
-            usable_preview = self._ensure_tile_preview(
+            result = self._tile_processing_job(
+                job_id,
+                row,
+                col,
                 raw_path,
                 preview_path,
-                tile_dir / f"{raw_path.stem}_preview.jpg",
+                adapter,
+                classifier_result,
+                reference_layout_path,
+                global_params_path,
+                context.get("bootstrap_preview_map"),
             )
-            if index == 1 and not (job_dir / "raw_preview.jpg").exists():
-                shutil.copy2(usable_preview, job_dir / "raw_preview.jpg")
-                self._set_raw_preview(job_id)
-
-            def progress_cb(info: dict, tile_index: int = index):
-                processing_update = {
-                    key: info[key]
-                    for key in (
-                        "classification",
-                        "classifier_raw_label",
-                        "classifier_mode",
-                        "selected_branch",
-                        "runner_used",
-                        "score",
-                        "calibration_skip_reason",
-                        "missing_calibrations",
-                    )
-                    if key in info
-                }
-                base = 80 + int(((tile_index - 1) / max(total, 1)) * 16)
-                self._up(
-                    job_id,
-                    stage="process",
-                    progress_pct=min(base, 97),
-                    processing=processing_update,
-                    tile_upload={
-                        "mode": "per_tile_raw",
-                        "received": total,
-                        "expected": total,
-                        "complete": True,
-                        "processing_index": tile_index,
-                    },
-                )
-
-            result = adapter.run(
-                canonical_source=raw_path,
-                preview_source=usable_preview,
-                output_dir=tile_dir,
-                progress_cb=progress_cb,
-            )
-            result.update({"row": row, "col": col, "raw_tile_path": str(raw_path)})
             tile_results.append(result)
+            self._up(
+                job_id,
+                stage="process",
+                progress_pct=min(80 + int((index / max(total, 1)) * 16), 96),
+                tile_upload={
+                    "mode": "per_tile_raw",
+                    "received": total,
+                    "expected": total,
+                    "complete": True,
+                    "processing_index": index,
+                },
+            )
 
         final_path = self._stitch_processed_tiles(tile_results, job_dir / "final.png", job_id=job_id)
         metadata_path = job_dir / "metadata.json"
         metadata = {
-            "processing_mode": "per_tile_raw_then_processed_mosaic",
+            "processing_mode": "per_tile_raw_then_processed_mosaic_first_three_bootstrap",
             "tile_count": total,
+            "bootstrap": context["bootstrap_metadata"],
+            "global_negative_params_path": str(global_params_path) if global_params_path else None,
+            "global_negative_params_url": f"/job-files/{job_id}/global_negative_params.json" if global_params_path else None,
+            "global_negative_params": global_params,
             "tiles": tile_results,
             "final_output_path": str(final_path) if final_path else None,
         }

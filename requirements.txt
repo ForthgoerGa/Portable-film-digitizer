@@ -1,0 +1,2 @@
+# Default development install for the PC-side server and processing pipeline.
+-r requirements-pc.txt

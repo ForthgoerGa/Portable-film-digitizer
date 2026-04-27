@@ -16,13 +16,20 @@ _DEFAULT_FILM_TYPE = FilmType.NEGATIVE_35MM
 
 _PROMPT = """You are classifying a scanned film image.
 Return ONLY valid JSON:
-{"film_type": "negative_35mm"|"negative_120"|"positive_35mm"|"positive_120"}
+{"film_type": "negative_35mm"|"negative_120"|"positive_35mm"|"positive_120", "confidence": 0.0-1.0}
 
 Classification rules:
 - Orange or brown base with inverted-looking tones suggests negative film.
 - Dark film borders with normal-looking tones suggest positive film.
 - Wider aspect ratios near 3:2 suggest 35mm.
 - Squarer aspect ratios suggest 120.
+- Use the visible image content and border/base appearance, not the scanner background.
+- If the image has normal-looking colors, trees/sky/people/objects are not inverted, classify it as positive.
+- If the image has an orange/brown mask and tones look inverted, classify it as negative.
+- Do NOT classify as negative only because the frame has a dark border, handwriting, edge numbers, scanner glare, or a blue/green color cast.
+- Positive slide film can have dark transparent borders, handwritten labels, and only a partial normal scene visible in the tile.
+- If any visible scene region looks like a normal photograph with plausible sky/trees/objects and not an inverted orange/brown negative, prefer positive.
+- Negative film should show an orange/brown film base or clearly inverted tones across the photographed scene.
 """
 
 
@@ -30,6 +37,8 @@ class ClassifierAgent:
     def __init__(self, model: Any | None = None) -> None:
         self._model = model if model is not None else _build_default_model()
         self.last_mode = "uninitialized"
+        self.last_confidence: float | None = None
+        self.last_payload: dict[str, Any] | None = None
 
     def classify(self, image_path: Path) -> FilmType:
         image_path = Path(image_path)
@@ -37,11 +46,19 @@ class ClassifierAgent:
         if self._model is None:
             logger.warning("No model available for classifier; defaulting to %s", _DEFAULT_FILM_TYPE.value)
             self.last_mode = "default"
+            self.last_confidence = 0.0
+            self.last_payload = {"film_type": _DEFAULT_FILM_TYPE.value, "confidence": 0.0}
             return _DEFAULT_FILM_TYPE
 
         try:
-            response = self._model.generate_content([_PROMPT, _image_part(image_path)])
+            image_input = image_path if config.MODEL_PROVIDER == "openai_compatible" else _image_part(image_path)
+            response = self._model.generate_content([_PROMPT, image_input])
             payload = json.loads(_response_text(response).strip())
+            self.last_payload = payload
+            try:
+                self.last_confidence = max(0.0, min(1.0, float(payload.get("confidence", 0.0))))
+            except Exception:
+                self.last_confidence = None
             value = str(payload.get("film_type", "")).strip().lower()
             if value in _VALID_TYPES:
                 self.last_mode = config.MODEL_PROVIDER
@@ -50,6 +67,8 @@ class ClassifierAgent:
         except Exception as exc:
             logger.warning("Classifier failed for %s: %s", image_path.name, exc)
             self.last_mode = "default"
+            self.last_confidence = 0.0
+            self.last_payload = {"film_type": _DEFAULT_FILM_TYPE.value, "confidence": 0.0, "error": str(exc)}
             return _DEFAULT_FILM_TYPE
 
 

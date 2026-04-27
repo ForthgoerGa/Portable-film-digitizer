@@ -1,0 +1,16 @@
+# PC-side FastAPI server, web API, RAW ingest, and post-processing runtime.
+fastapi>=0.110
+uvicorn[standard]>=0.29
+pydantic>=2.0
+python-multipart>=0.0.9
+requests>=2.31
+
+numpy>=1.26
+opencv-python-headless>=4.9
+pillow>=10.0
+rawpy>=0.21
+tifffile>=2024.5
+
+pyserial>=3.5
+google-genai>=1.0
+python-dotenv>=1.0

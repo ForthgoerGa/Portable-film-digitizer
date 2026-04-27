@@ -34,6 +34,7 @@ STAGE4_DEFAULT_PARAMS: dict[str, Any] = {
     "display_percentile": 99.5,
     "display_gamma": 2.2,
     "display_eps": 1e-6,
+    "display_fixed_scale": None,
     "final_trim_enabled": True,
     "final_exposure_ev": 0.0,
     "final_black_point": 0.0,
@@ -185,6 +186,7 @@ def final_display_mapping(
     display_percentile: float = 99.5,
     display_gamma: float = 2.2,
     display_eps: float = 1e-6,
+    display_fixed_scale: float | None = None,
 ) -> tuple[np.ndarray, dict[str, Any]]:
     """Map linear working RGB to display-referred RGB in [0, 1]."""
 
@@ -192,7 +194,7 @@ def final_display_mapping(
     if not display_mapping_enabled:
         return np.clip(x, 0.0, 1.0).astype(np.float32), {"enabled": False}
 
-    scale = _safe_percentile(x, display_percentile)
+    scale = float(display_fixed_scale) if display_fixed_scale is not None else _safe_percentile(x, display_percentile)
     x = x / (scale + max(float(display_eps), 1e-12))
     x = np.clip(x, 0.0, 1.0)
     if display_mapping_mode == "simple_gamma":
@@ -208,6 +210,7 @@ def final_display_mapping(
         "mode": display_mapping_mode,
         "display_percentile": float(display_percentile),
         "scale": float(scale),
+        "scale_source": "global_fixed" if display_fixed_scale is not None else "per_frame_percentile",
         "display_gamma": float(display_gamma),
         "output_mean_rgb": [float(v) for v in out.mean(axis=(0, 1))],
     }
@@ -292,6 +295,7 @@ def _stage4_final_finish_and_export_impl(
         display_percentile=float(params["display_percentile"]),
         display_gamma=float(params["display_gamma"]),
         display_eps=float(params["display_eps"]),
+        display_fixed_scale=params.get("display_fixed_scale"),
     )
 
     if bool(params["final_trim_enabled"]):

@@ -91,6 +91,36 @@ async function checkSystemStatus() {
 }
 
 // ---------------------------------------------------------------------------
+// Classification banner
+// ---------------------------------------------------------------------------
+
+const _CLF_LABELS = {
+    negative_film: "Negative Film",
+    positive_film: "Positive Film",
+    instax_mini:   "Instax Mini",
+};
+const _CLF_CSS = {
+    negative_film: "negative",
+    positive_film: "positive",
+    instax_mini:   "instax",
+};
+
+function _updateClassificationBanner(job) {
+    const p = job.processing || {};
+    const cls = p.classification;
+    if (!cls) return;
+    const banner   = document.getElementById("classificationBanner");
+    const typeChip = document.getElementById("clfTypeChip");
+    const rawEl    = document.getElementById("clfRawLabel");
+    const modeEl   = document.getElementById("clfModeText");
+    banner.classList.remove("hidden");
+    typeChip.textContent = _CLF_LABELS[cls] || cls.replace(/_/g, " ");
+    typeChip.className   = `clf-type-chip ${_CLF_CSS[cls] || "unknown"}`;
+    rawEl.textContent    = p.classifier_raw_label || "";
+    modeEl.textContent   = p.classifier_mode || "";
+}
+
+// ---------------------------------------------------------------------------
 // Tile grid
 // ---------------------------------------------------------------------------
 
@@ -106,8 +136,13 @@ function _buildTileGrid(rows, cols) {
     procTileGrid.innerHTML = "";
 
     for (let r = 0; r < rows; r++) {
-        for (let c = 0; c < cols; c++) {
-            const stem = `row_${r}_col_${c}`;
+        // Serpentine (S-shape) scan: even 0-indexed rows are captured
+        // right-to-left, so scan col 0 is physically the rightmost tile.
+        // Iterate display positions left-to-right and map to the correct
+        // scan column so physical order is preserved in the grid.
+        for (let displayCol = 0; displayCol < cols; displayCol++) {
+            const scanCol = (r % 2 === 0) ? (cols - 1 - displayCol) : displayCol;
+            const stem = `row_${r}_col_${scanCol}`;
             rawTileGrid.insertAdjacentHTML("beforeend", `<div class="tile-cell" id="raw_${stem}"></div>`);
             procTileGrid.insertAdjacentHTML("beforeend", `<div class="tile-cell" id="proc_${stem}"></div>`);
         }
@@ -156,10 +191,6 @@ function _showFinalImage(url) {
 }
 
 async function _updateTileGrids(job) {
-    // Try to init grid from scan dimensions when known
-    const sRows = job.scan && job.scan.rows > 0 ? job.scan.rows : 0;
-    const sCols = job.scan && job.scan.cols > 0 ? job.scan.cols : 0;
-
     if (!job.artifacts || !job.artifacts.tile_set_url) return;
 
     let data;
@@ -171,28 +202,35 @@ async function _updateTileGrids(job) {
         return;
     }
 
-    // Infer grid size from tile stems if scan dims not yet set
-    let rows = sRows, cols = sCols;
-    if ((!rows || !cols) && data.tiles.length > 0) {
+    // Determine grid dimensions.
+    // During an active scan, use the authoritative values from the Pi scanner
+    // status (job.scan.rows/cols). Never infer from a partial tile set — doing so
+    // would lock the grid at the wrong size (e.g. 1×1 when only the first tile
+    // has arrived). For completed/non-running jobs all tiles are present, so
+    // inference from stems is safe.
+    let rows = job.scan && job.scan.rows > 0 ? job.scan.rows : 0;
+    let cols = job.scan && job.scan.cols > 0 ? job.scan.cols : 0;
+
+    if ((!rows || !cols) && job.state !== "running" && data.tiles.length > 0) {
         let maxR = 0, maxC = 0;
         for (const t of data.tiles) {
             const m = t.stem && t.stem.match(/row_(\d+)_col_(\d+)/);
             if (m) { maxR = Math.max(maxR, +m[1]); maxC = Math.max(maxC, +m[2]); }
         }
-        if (maxR >= 0 && maxC >= 0 && data.tiles.length > 0) {
-            rows = maxR + 1;
-            cols = maxC + 1;
-        }
+        rows = maxR + 1;
+        cols = maxC + 1;
     }
 
     if (rows > 0 && cols > 0) _buildTileGrid(rows, cols);
 
-    for (const tile of data.tiles) {
-        if (tile.preview_url) _setRawTile(tile.stem, tile.preview_url);
-        if (tile.processed_url) _setProcTile(tile.stem, tile.processed_url);
+    if (_gridBuilt) {
+        for (const tile of data.tiles) {
+            if (tile.preview_url) _setRawTile(tile.stem, tile.preview_url);
+            if (tile.processed_url) _setProcTile(tile.stem, tile.processed_url);
+        }
     }
 
-    // Once processing is done, replace processed grid with the integrated final image
+    // Once processing is complete, replace processed grid with the final image
     if (job.artifacts.final_preview_url && job.state === "completed") {
         _showFinalImage(job.artifacts.final_preview_url);
     }
@@ -294,6 +332,9 @@ function applyJobToUI(job) {
         jobStatusText.textContent = `${stageLookup[stage] || stage}.`;
     }
 
+    // Classification banner
+    _updateClassificationBanner(job);
+
     // Tile grid update (fire-and-forget; does not block polling)
     _updateTileGrids(job);
 }
@@ -328,6 +369,12 @@ function onJobTerminal(job) {
 }
 
 function resetJobUI() {
+    // Reset classification banner
+    document.getElementById("classificationBanner").classList.add("hidden");
+    document.getElementById("clfTypeChip").textContent = "";
+    document.getElementById("clfRawLabel").textContent = "";
+    document.getElementById("clfModeText").textContent = "";
+
     // Reset tile state
     _gridBuilt = false;
     _gridRows = 0;
