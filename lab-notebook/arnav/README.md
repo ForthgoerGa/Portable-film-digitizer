@@ -294,3 +294,13 @@ After we achieved full functionality on the breadboard, Allan and I attempted to
 
 ### 4/26 — Final Changes to Form Factor, Organization, and Robustness
 Worked with the group to refine the software interface and physical organization of components within the assembly since we were not able to get our PCB to work. I organized motor cables, wires used for control unit signals, and overall robustness of the system to development changes like plugging in wires, attaching battery, and so on.
+
+### 4/27 — Final Demo
+Demonstrated our project to Gerasimos and Professor Gruev. We lost points for not using our PCB, but were able to achieve full functionality on the rest of our design. 
+
+### 4/28 — Work on Final Presentation
+Worked with the group to design slides and graphics for the final presentation. Practiced presentation, cut down overly wordy content, and made sure all our findings and verifications were present. 
+
+### 4/30 — Final Presentation 
+Presented to Gerasimos and Professor Gruev. We were asked questions about open-loop motor design, voltage ripples from capacitors, as well as image processing quality.
+Following the presentation, I worked on editing our demo video before uploading to the web board. 
