@@ -87,8 +87,11 @@ def start_scan(req: dict):
 def get_status():
     return coordinator.status_dict()
 ```
-[Insert picture of control plane UI]
 
+
+<img width="453" height="726" alt="image" src="https://github.com/user-attachments/assets/aabdf06c-febe-494a-b245-2e03ea7dc694" />
+
+*Prototype of Control Plane server*
 
 ### 3/20 — AWS Lambda Integration
 
@@ -159,7 +162,10 @@ if __name__ == "__main__":
     run_experiment()
 ```
 
-[AWS Cloudwatch latency trace]
+
+<img width="2182" height="260" alt="image" src="https://github.com/user-attachments/assets/74ffc54b-7267-4e30-a513-2b3c698d9c0c" />
+
+*AWS Cloudwatch latency trace*
 
 Even worst-case latency in the case of a cold start is amortized by the overall runtime of our scan, so it is not a concern. 
 
@@ -180,6 +186,8 @@ Results
 
 ### 3/27 — TA Meeting, PCB  Verification
 Met with Gerasimos this week and discussed previous work on the software architecture as well as next steps to assemble the circuit on a breadboard and PCB now that parts have arrived. Me and Guyan planned to work together over the next few weeks to incrementally solder components on and test in isolation so that we could create a functional prototype. 
+
+
 
 ### 4/1 — Individual Progress Report
 I worked on my individual progress report by looking back on my contributions to the project and thinking about future work. 
@@ -210,7 +218,19 @@ Using the equations above, we can modify the constants in our code to achieve an
 ### 4/13 — Solder STM32 
 I attempted to solder the STM32 onto our PCB using several different methods since we didn't have a stencil with our order. At first, I tried to use solder paste with a heat gun to heat around the edges of the chip footprint. This did not work though, as the solder paste towards the center of the chip did not get hot enough. Since all the solder points were between the PCB and the chip, I also had no way to verify if connections were solid. The next thing I tried after consulting the E-Shop was to use a soldering iron, and try drag-soldering small beads of solder across all 50+ pins on the underside of the chip. I was able to achieve a satisfactory result with this, after checking for any shorts or missing solder with the X-Ray machine in the E-Shop. This was a time consuming step and took a few days of effort. However, we switched focus from trying to get the MCU working on the PCB because we were running short on time and didn't yet have a functional prototype. 
 
-[Insert image of soldered STM32]
+<img width="829" height="645" alt="image" src="https://github.com/user-attachments/assets/72f56944-9914-4e33-9d36-6c894148acc7" />
+
+*Soldered STM32*
+
+<img width="820" height="927" alt="image" src="https://github.com/user-attachments/assets/0e75d275-a6e3-41f9-9e4e-d97411a58e51" />
+
+*STM32 solder points viewed under X-Ray machine*
+
+
+<img width="824" height="794" alt="image" src="https://github.com/user-attachments/assets/6ac4ba83-082d-48bc-bee6-fbc9325af384" />
+
+*Oscilloscope reading from motor driver STEP signal under peak load*
+
 
 ### 4/18 — STM32 Motor Controller and UART Listener
 
@@ -281,6 +301,11 @@ Conceptual design for STM32 motor control interface. Attribution: Google Gemini 
 
 One design decision I made was to make the serial commands synchronous instead of asynchronous. This means that when the Pi issues a command, a response is only received over UART when the STM finishes issuing the computed number of pulses. This makes sure that the Raspberry Pi scan coordinator does not prematurely try to issue new movement commands while previous ones are still running, as this could cause inconsistencies in state.
 
+<img width="614" height="698" alt="image" src="https://github.com/user-attachments/assets/631965cd-cdae-4062-b699-fc6b11f573fe" />
+
+*Circuit implemented on breadboard*
+
+
 ### 4/22 — Work on End-to-End Scan Coordination
 After we had all of our pieces working individually, we worked on integrating everything into a "one-click" scan. This means that we should be able to open to insert a piece of film, click "start scan" and watch as the camera and film stage move around to capture the necessary frames. After the physical captures, post processing should be invoked automatically and return the output image. One thing that gave us a lot of trouble in this phase was unstable motor current; when using our battery, we sometimes saw that even when no motors were moving on their own even without pulses issued. Allan helped diagnose the issue by finding out that when using the battery the circuit suffered from drops in voltage to the motor driver, which meant that instead of the normal 3.3V logic level it was operating much lower. That meant that even small noise (such as a 50mV ripple) was being treated as a HIGH signal. 
 
@@ -292,11 +317,24 @@ The week before our demo, our motors started slipping and jerking while turning.
 ### 4/25 — Attempt PCB Integration and Troubleshooting
 After we achieved full functionality on the breadboard, Allan and I attempted to move our design onto the PCB. Although we were not able to get the microcontroller to work on the PCB, we theorized that the rest of the circuit could be transitioned over, which would reduce the number of wires and loose components inside our assembly. However, we faced an issue where one of the motor driver sockets on the PCB was not receiving the correct voltage. 
 
+<img width="838" height="547" alt="image" src="https://github.com/user-attachments/assets/49a3f911-c709-4bee-8841-02757a8de6d6" />
+
+*Voltage regulation to 5.1v*
+
 ### 4/26 — Final Changes to Form Factor, Organization, and Robustness
 Worked with the group to refine the software interface and physical organization of components within the assembly since we were not able to get our PCB to work. I organized motor cables, wires used for control unit signals, and overall robustness of the system to development changes like plugging in wires, attaching battery, and so on.
 
 ### 4/27 — Final Demo
 Demonstrated our project to Gerasimos and Professor Gruev. We lost points for not using our PCB, but were able to achieve full functionality on the rest of our design. 
+
+<img width="1114" height="773" alt="image" src="https://github.com/user-attachments/assets/280349a3-17ea-4a58-956b-d086ebd62520" />
+
+*Processed output*
+
+<img width="831" height="957" alt="image" src="https://github.com/user-attachments/assets/9a50d2d8-61c0-4ed0-b6ee-b51bb9cf07c2" />
+
+*Prototype at demo*
+
 
 ### 4/28 — Work on Final Presentation
 Worked with the group to design slides and graphics for the final presentation. Practiced presentation, cut down overly wordy content, and made sure all our findings and verifications were present. 
